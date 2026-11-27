@@ -37,7 +37,13 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
         self.finisher_results: list = []
 
     def _log(self, kind: str, **kw: Any) -> None:
-        self.events.append({"step": self.step_idx, "event": kind, **kw})
+        ev = {"step": self.step_idx, "event": kind, **kw}
+        self.events.append(ev)
+        try:
+            import json as _j, sys as _s
+            print("[ev] " + _j.dumps(ev, default=str)[:400], file=_s.stderr, flush=True)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ target selection
     def _select(self, goal, *, min_confidence: float = 0.25, ignore_seated: bool = True) -> PartEstimate | None:
