@@ -29,11 +29,13 @@ which order. Reply with one JSON object only."""
 KNOWLEDGE = """Fixture seats (labels drawn on the pictures in cyan; answer with the full seat id):
 - tray (T): open tray; bolts, nuts and washers can all be dropped in it.
 - bore_m16 (b16): round vertical hole, 20 mm; bore_m24 (b24): 28 mm; bore_m30 (b30): 35 mm. A bolt is inserted standing \
-up (head up) into the hole of ITS size: bolt_m16x50 -> bore_m16, bolt_m24x50 -> bore_m24, bolt_m30x60 -> bore_m30. A bolt \
+up (head up) into the hole of ITS size: bolt_m16x50 -> bore_m16, bolt_m24x70 -> bore_m24, bolt_m30x100 -> bore_m30. A bolt \
 too fat for a hole cannot enter it; a thin bolt in a wide hole does not count. A washer can lie flat over a hole mouth.
 - hex_m24 (h24): hex pocket 41 mm across flats; hex_m30 (h30): 51 mm; hex_m36 (h36): 60 mm. A nut is seated flat in the \
 pocket of ITS size: nut_m24 -> hex_m24, nut_m30 -> hex_m30, nut_m36 -> hex_m36 ("the pocket that matches its size").
-Part sizes: bolts M16x50 (smallest), M24x50, M30x60 (largest); nuts M24 < M30 < M36; washer_m30 (62 mm ring).
+Part sizes: bolts M16x50 (smallest, shortest), M24x70, M30x100 (largest, longest); nuts M24 < M30 < M36; washer_m33 (60 mm ring). \
+Small nuts and washers (M12-M20) are clutter unless the instruction names them. Every part is the same grey plastic: parts \
+differ only in shape and size, never colour.
 Relative destinations: "on:P3" = stack the part on part P3 (a washer is lowered over the shank of a bolt P3 that stands on \
 its head; a washer can also go over a hole first and the bolt then goes through it into the same hole); "next_to:P3" or \
 "next_to:tray" = a free spot on the table beside that part / seat (the moved part is the one the instruction says to move; the \
@@ -42,7 +44,7 @@ reference part stays where it is: "put the washer next to the bolt" -> part = th
 USER = """Instruction: "{instruction}"
 Pictures, in order: 1) GOAL = zoomed crop of the fixture in the finished scene (every goal part seated; seat labels drawn next to the seats' centres); 2) LEFT camera and 3) RIGHT \
 camera of the CURRENT scene with candidate part ids drawn in yellow (P1, P2, ...) and seat labels in cyan.
-Detected parts (from the perception module; model/colour are estimates):
+Detected parts (from the perception module; model = detected kit part and size):
 {parts}
 
 How to decide:
@@ -54,8 +56,8 @@ tags above and the GOAL picture (which labelled seat holds which part there).
 - Follow the instruction's order if it gives one ("then", "first"); otherwise any order.
 {knowledge}
 
-The model names of detected NUTS are unreliable (a nut standing on its edge is often mislabelled one size too small): for a nut, choose \
-the pocket from the instruction and the GOAL picture, not from the detected size. Bolt models are reliable.
+Detected sizes are reliable: a nut goes in the hex pocket of its detected size and a bolt in the hole of its detected size; use the \
+GOAL picture to confirm.
 Reply with JSON only, no markdown:
 {{"task": "<the instruction in your own words: which objects go to which kind of destination>", "steps": [{{"part": "<Pk>", "dest": "<seat id | on:Pk | next_to:Pk>"}}]}}
 One step per moved object (usually 1 or 2); never use a part twice."""
@@ -152,9 +154,7 @@ def parts_table(ctx: PlanContext) -> str:
         col = p.extra.get("color") or p.extra.get("colour") or "?"
         near_fix = ctx.scene.fixture_distance(p.position[:2]) < 0.03
         model = p.raw_kind
-        if p.kind == "nut" and p.pose_hint == "on_edge":
-            model = "nut (size not reliably detected: it stands on its edge; take the pocket from the instruction and the GOAL picture)"
-        rows.append(f"- {pid}: {model}, colour {col}, pose {p.pose_hint}, {'against the fixture' if near_fix else 'on the table'}, "
+        rows.append(f"- {pid}: {model}, pose {p.pose_hint}, {'against the fixture' if near_fix else 'on the table'}, "
                     f"{dtray[pid]:.0f} cm from the tray centre" + (f" [{'; '.join(tags[pid])}]" if tags[pid] else ""))
     return "\n".join(rows) if rows else "- (none detected)"
 
