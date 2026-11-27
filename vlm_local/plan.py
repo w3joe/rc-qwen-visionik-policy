@@ -14,6 +14,9 @@ pixel targets; here one call answers the whole ordered list with candidate ids a
 from __future__ import annotations
 
 import math
+import os
+import re
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -139,6 +142,14 @@ def validate_and_ground(plan: Plan, ctx: PlanContext) -> tuple[list[PlannedGoal]
         used.add(pid)
         model = part.raw_kind if part.raw_kind and part.raw_kind != "unknown" else part.kind
         dest = (s.dest or "").strip().lower()
+        # A nut goes in the hex pocket of its own size and a bolt in the hole of its own size: the learned
+        # detector's size class is reliable, the language planner's pocket choice is not.
+        _m = re.match(r"(nut|bolt)_m(\d+)", str(model))
+        if _m and os.environ.get("RC_SIZE_OVERRIDE", "1") != "0":
+            _want = ("hex_m" if _m.group(1) == "nut" else "bore_m") + _m.group(2)
+            if _want in SEAT_LOCAL_GEOM and dest.startswith(_want[:4]) and dest != _want:
+                print(f"[plan] size override {pid}: {dest} -> {_want} ({model})", file=sys.stderr, flush=True)
+                dest = _want
         g = PlannedGoal(goal_id=f"{pid}->{dest}", part_kind=part.kind, part_model=model, seat_id="",
                         target_xy=part.position[:2].copy(),
                         colour_hint=str(part.extra.get("color") or part.extra.get("colour") or "") or None)
@@ -164,6 +175,11 @@ def validate_and_ground(plan: Plan, ctx: PlanContext) -> tuple[list[PlannedGoal]
             problems.append(f"step {i}: unknown destination {s.dest!r}")
             continue
         goals.append(g)
+    try:
+        print("[plan] goals " + "; ".join(f"{g.goal_id}:{g.part_model}" for g in goals)
+              + " | parts " + "; ".join(f"{k}:{v.raw_kind}" for k, v in ctx.ids.items()), file=sys.stderr, flush=True)
+    except Exception:
+        pass
     return goals, problems
 
 
