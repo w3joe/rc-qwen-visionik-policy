@@ -1,0 +1,12 @@
+Copyright 2026 w3joe
+
+Licensed under the Apache License, Version 2.0 (see LICENSE), except where a file says otherwise.
+
+Third-party code
+----------------
+* rc_sdk/ and scripts/ (selftest.py, make_example_weights.py, sample_obs/): copied unchanged from the Reality Check
+  contest starter (`starter/` of the participant bundle). They are not used by the judged image, which ships its own rc_sdk.
+* vlm_local/ and serve.py: written for this project (no vendored third-party source).
+
+The model weights are NOT in this repository. They are in the Hugging Face repo w3joe/rc-qwen-visionik-policy, which holds
+Qwen3-VL-8B-Instruct (Qwen Team, Alibaba Cloud; Apache License 2.0), unmodified; see that repo's LICENSE, NOTICE.md and qwen3_vl_8b/LICENSE.
