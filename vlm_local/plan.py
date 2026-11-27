@@ -147,7 +147,8 @@ def validate_and_ground(plan: Plan, ctx: PlanContext) -> tuple[list[PlannedGoal]
         _m = re.match(r"(nut|bolt)_m(\d+)", str(model))
         if _m and os.environ.get("RC_SIZE_OVERRIDE", "1") != "0":
             _want = ("hex_m" if _m.group(1) == "nut" else "bore_m") + _m.group(2)
-            if _want in SEAT_LOCAL_GEOM and dest.startswith(_want[:4]) and dest != _want:
+            # any fixture seat other than the tray: the hole/pocket of the part's own kind and size
+            if _want in SEAT_LOCAL_GEOM and dest.startswith(("bore_", "hex_")) and dest != _want:
                 print(f"[plan] size override {pid}: {dest} -> {_want} ({model})", file=sys.stderr, flush=True)
                 dest = _want
         g = PlannedGoal(goal_id=f"{pid}->{dest}", part_kind=part.kind, part_model=model, seat_id="",
