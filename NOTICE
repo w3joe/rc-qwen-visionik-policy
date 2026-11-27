@@ -10,3 +10,10 @@ Third-party code
 
 The model weights are NOT in this repository. They are in the Hugging Face repo w3joe/rc-qwen-visionik-policy, which holds
 Qwen3-VL-8B-Instruct (Qwen Team, Alibaba Cloud; Apache License 2.0), unmodified; see that repo's LICENSE, NOTICE.md and qwen3_vl_8b/LICENSE.
+
+Learned part detector (vlm_local/classical/detector.py, selfcal.py)
+-------------------------------------------------------------------
+* Weights: perception/detector.pt in the Hugging Face repo (revision db74a34e8138eff3b8f03c1494fb26fb73f8965a or later),
+  a YOLO11s-pose model fine-tuned from Ultralytics' yolo11s-pose.pt on simulator renders of the two PUBLIC tasks only.
+  Ultralytics YOLO code and pretrained weights are licensed under AGPL-3.0; the fine-tuned detector is a derivative and
+  is distributed under AGPL-3.0. It is loaded with the `ultralytics` package already present in the judged image.
