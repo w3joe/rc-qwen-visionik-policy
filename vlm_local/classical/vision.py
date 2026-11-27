@@ -1,7 +1,7 @@
 """Classical calibrated multi-view RGB perception for Reality Check tabletop scenes.
 
 Uses ONLY policy-wire inputs:
-  - RGB images (`left`, `right`, `wrist`, optional `overhead`, optional `goal`)
+  - RGB images (`left`, `right`, `wrist`, optional `goal`)
   - Proprioception (`joint_pos`, `ee_pos`, `ee_quat`, `gripper`)
   - Task `instruction`
   - Public kit geometry, public fixture v3 geometry, and nominal camera poses
@@ -46,11 +46,6 @@ GOAL_CAMERA_POS = (0.42, -0.52, 0.52)
 GOAL_CAMERA_TARGET = (0.74, -0.03, 0.03)
 GOAL_CAMERA_FOVY = 50.0
 
-# Fixed overhead camera (640x480, fovy 55 deg)
-TOP_CAMERA_POS = (0.85, 0.0, 1.25)
-TOP_CAMERA_XYAXES = (0.0, -1.0, 0.0, 1.0, 0.0, 0.0)
-TOP_CAMERA_FOVY = 55.0
-
 # Wrist camera rigid mount relative to tool0 and gripperframe (ee)
 GRIPPER_SPACER_M = 0.0244
 BASE_MOUNT_Z_M = 0.007
@@ -60,13 +55,13 @@ WRIST_CAMERA_POS = (0.0140, 0.1103, 0.0649)
 WRIST_CAMERA_XYAXES = (-1.0, 0.0, 0.0, 0.0, 0.92388, 0.38268)
 WRIST_CAMERA_FOVY = 55.0
 
-# Printed fixture v3 geometry (metres, fixture-local: origin at footprint centre on z=0)
-FIXTURE_ORIGIN = (0.70, 0.10, 0.0)
+# Printed fixture v3 rev-3 geometry (metres, fixture-local: origin at footprint centre on z=0)
+FIXTURE_ORIGIN = (0.66, 0.15, 0.0)
 FIXTURE_X0, FIXTURE_XM, FIXTURE_X1 = -0.125, -0.026, 0.125
 FIXTURE_Y0, FIXTURE_Y1 = -0.115, 0.115
 FIXTURE_TRAY_FLOOR_Z = 0.004
 FIXTURE_TRAY_WALL_Z = 0.022
-FIXTURE_BLOCK_TOP_Z = 0.075
+FIXTURE_BLOCK_TOP_Z = 0.115
 FIXTURE_TRAY_INNER_X = (-0.121, -0.026)
 FIXTURE_TRAY_INNER_Y = (-0.111, 0.111)
 # REALITY CHECK inlay text bounding box on -y face (metres, fixture-local)
@@ -74,14 +69,14 @@ FIXTURE_TEXT_X = (-0.013, 0.112)
 FIXTURE_TEXT_Z = (0.021, 0.061)
 
 FIXTURE_BORES: tuple[dict[str, Any], ...] = (
-    {"id": "bore_m24", "xy": (0.0072, 0.0860), "diameter": 0.028, "floor_z": 0.020, "top_z": 0.075, "part": "bolt_m24x50"},
-    {"id": "bore_m16", "xy": (0.0072, 0.0035), "diameter": 0.020, "floor_z": 0.020, "top_z": 0.075, "part": "bolt_m16x50"},
-    {"id": "bore_m30", "xy": (0.0072, -0.0825), "diameter": 0.035, "floor_z": 0.010, "top_z": 0.075, "part": "bolt_m30x60"},
+    {"id": "bore_m24", "xy": (0.0072, 0.0860), "diameter": 0.028, "floor_z": 0.040, "top_z": 0.115, "part": "bolt_m24x70"},
+    {"id": "bore_m16", "xy": (0.0072, 0.0035), "diameter": 0.020, "floor_z": 0.060, "top_z": 0.115, "part": "bolt_m16x50"},
+    {"id": "bore_m30", "xy": (0.0072, -0.0825), "diameter": 0.035, "floor_z": 0.010, "top_z": 0.115, "part": "bolt_m30x100"},
 )
 FIXTURE_HEX_POCKETS: tuple[dict[str, Any], ...] = (
-    {"id": "hex_m30", "xy": (0.07735, 0.0775), "across_flats": 0.051, "floor_z": 0.062, "top_z": 0.075, "part": "nut_m30"},
-    {"id": "hex_m36", "xy": (0.07735, -0.0050), "across_flats": 0.060, "floor_z": 0.060, "top_z": 0.075, "part": "nut_m36"},
-    {"id": "hex_m24", "xy": (0.07735, -0.0825), "across_flats": 0.041, "floor_z": 0.065, "top_z": 0.075, "part": "nut_m24"},
+    {"id": "hex_m30", "xy": (0.07735, 0.0775), "across_flats": 0.051, "floor_z": 0.102, "top_z": 0.115, "part": "nut_m30"},
+    {"id": "hex_m36", "xy": (0.07735, -0.0050), "across_flats": 0.060, "floor_z": 0.100, "top_z": 0.115, "part": "nut_m36"},
+    {"id": "hex_m24", "xy": (0.07735, -0.0825), "across_flats": 0.041, "floor_z": 0.105, "top_z": 0.115, "part": "nut_m24"},
 )
 
 
@@ -150,11 +145,20 @@ class KitPart:
 
 KIT_PARTS: dict[str, KitPart] = {
     "bolt_m16x50": KitPart("bolt_m16x50", "bolt", diameter=0.016, length=0.050, head_height=0.010, across_flats=0.024, tip_over_deg=25.0),
+    "bolt_m24x70": KitPart("bolt_m24x70", "bolt", diameter=0.024, length=0.070, head_height=0.015, across_flats=0.036, tip_over_deg=27.0),
+    "bolt_m30x100": KitPart("bolt_m30x100", "bolt", diameter=0.030, length=0.100, head_height=0.0187, across_flats=0.046, tip_over_deg=24.0),
     "bolt_m24x50": KitPart("bolt_m24x50", "bolt", diameter=0.024, length=0.050, head_height=0.015, across_flats=0.036, tip_over_deg=35.0),
     "bolt_m30x60": KitPart("bolt_m30x60", "bolt", diameter=0.030, length=0.060, head_height=0.0187, across_flats=0.046, tip_over_deg=37.0),
+    "nut_m12": KitPart("nut_m12", "nut", across_flats=0.018, thickness=0.0108, hole=0.012),
+    "nut_m16": KitPart("nut_m16", "nut", across_flats=0.024, thickness=0.0148, hole=0.016),
+    "nut_m20": KitPart("nut_m20", "nut", across_flats=0.030, thickness=0.0180, hole=0.020),
     "nut_m24": KitPart("nut_m24", "nut", across_flats=0.036, thickness=0.0215, hole=0.024),
     "nut_m30": KitPart("nut_m30", "nut", across_flats=0.046, thickness=0.0256, hole=0.030),
     "nut_m36": KitPart("nut_m36", "nut", across_flats=0.055, thickness=0.0310, hole=0.036),
+    "washer_m12": KitPart("washer_m12", "washer", thickness=0.0025, hole=0.013, outer_diameter=0.024),
+    "washer_m16": KitPart("washer_m16", "washer", thickness=0.003, hole=0.017, outer_diameter=0.030),
+    "washer_m20": KitPart("washer_m20", "washer", thickness=0.003, hole=0.021, outer_diameter=0.037),
+    "washer_m33": KitPart("washer_m33", "washer", thickness=0.005, hole=0.034, outer_diameter=0.060),
     "washer_m30": KitPart("washer_m30", "washer", thickness=0.006, hole=0.035, outer_diameter=0.062),
 }
 
@@ -1528,10 +1532,11 @@ def _fit_candidate_3d(
     hypotheses: list[tuple[str, str]] = []
     if color_family == "gold":
         hypotheses.extend([
-            ("bolt_m30x60", "lying"),
-            ("bolt_m30x60", "standing"),
-            ("bolt_m24x50", "lying"),
+            ("bolt_m30x100", "lying"),
+            ("bolt_m30x100", "standing"),
+            ("bolt_m24x70", "lying"),
             ("bolt_m16x50", "lying"),
+            ("washer_m33", "lying"),
             ("nut_m24", "lying"),
             ("nut_m30", "lying"),
             ("nut_m36", "lying"),
@@ -1540,23 +1545,23 @@ def _fit_candidate_3d(
             ("nut_m36", "on_edge"),
         ])
         if allow_leaning:
-            hypotheses.extend([("bolt_m30x60", "leaning"), ("bolt_m24x50", "leaning")])
+            hypotheses.extend([("bolt_m30x100", "leaning"), ("bolt_m24x70", "leaning"), ("bolt_m16x50", "leaning")])
     else:
         hypotheses.extend([
-            ("washer_m30", "lying"),
+            ("washer_m33", "lying"),
             ("bolt_m16x50", "lying"),
-            ("bolt_m24x50", "lying"),
-            ("bolt_m30x60", "lying"),
+            ("bolt_m24x70", "lying"),
+            ("bolt_m30x100", "lying"),
             ("nut_m24", "lying"),
             ("nut_m30", "lying"),
             ("nut_m36", "lying"),
             ("nut_m30", "on_edge"),
             ("nut_m24", "on_edge"),
             ("bolt_m16x50", "standing"),
-            ("bolt_m24x50", "standing"),
+            ("bolt_m30x100", "standing"),
         ])
         if allow_leaning:
-            hypotheses.extend([("bolt_m16x50", "leaning"), ("bolt_m24x50", "leaning")])
+            hypotheses.extend([("bolt_m16x50", "leaning"), ("bolt_m30x100", "leaning"), ("bolt_m24x70", "leaning")])
 
     has_stereo = len(blobs_by_view) >= 2
 
@@ -1820,8 +1825,8 @@ def _detect_leaning_bolt_negy(
 
     found: list[dict[str, Any]] = []
     for family, part_cands in (
-        ("gold", ("bolt_m30x60", "bolt_m24x50")),
-        ("light", ("bolt_m16x50", "bolt_m24x50")),
+        ("gold", ("bolt_m30x100", "bolt_m16x50", "bolt_m24x70")),
+        ("light", ("bolt_m16x50", "bolt_m30x100", "bolt_m24x70")),
     ):
         seed_m = strip_m & (ctx_r["is_gold_seed"] if family == "gold" else ctx_r["is_light_seed"])
         if int(seed_m.sum()) < 8:
@@ -1915,6 +1920,8 @@ def _assign_roles(
     goal_cam: Camera | None,
 ) -> None:
     """Assign `role` ('target', 'decoy', 'clutter') and optional `target_seat` to parts."""
+    from .scene_interface import extract_part_material_and_color, normalize_material_name
+
     text = (instruction or "").lower()
     wants_tray = "tray" in text
     wants_hole = "hole" in text
@@ -1922,10 +1929,10 @@ def _assign_roles(
     wants_washer = "washer" in text
     wants_bolt = "bolt" in text
     wants_nut = "nut" in text
-    wants_smaller_bolt = ("smaller" in text) and wants_bolt
-    wants_larger_bolt = (("larger" in text) or ("bigger" in text)) and wants_bolt
+    wants_smaller_bolt = (("smaller" in text) or ("smallest" in text)) and wants_bolt
+    wants_larger_bolt = (("larger" in text) or ("bigger" in text) or ("largest" in text)) and wants_bolt
     wants_near_tray = ("nearer the tray" in text) or ("nearest the tray" in text) or ("closer to the tray" in text)
-    wants_near_robot = ("nearer the robot" in text) or ("closer to the robot" in text)
+    wants_near_robot = ("nearer the robot" in text) or ("nearest the robot" in text) or ("closer to the robot" in text)
 
     # Goal-image presence cue (absent in goal => definitely needs to be moved!)
     goal_moved: list[bool | None] = []
@@ -1939,11 +1946,17 @@ def _assign_roles(
     for p in parts:
         p["role"] = "clutter"
 
-    tray_xy = np.asarray(seats.get("tray", [0.63, 0.10, 0.004])[:2], float)
+    tray_xy = np.asarray(seats.get("tray", [0.5865, 0.15, 0.004])[:2], float)
 
-    def _pick_best(cands: list[int], prefer_small: bool = False, prefer_large: bool = False,
-                   prefer_near_tray: bool = False, prefer_near_robot: bool = False,
-                   prefer_color: str | None = None) -> int | None:
+    def _pick_best(
+        cands: list[int],
+        prefer_small: bool = False,
+        prefer_large: bool = False,
+        prefer_near_tray: bool = False,
+        prefer_near_robot: bool = False,
+        prefer_color: str | None = None,
+        prefer_material: str | None = None,
+    ) -> int | None:
         if not cands:
             return None
         if len(cands) == 1:
@@ -1952,13 +1965,25 @@ def _assign_roles(
         def key_fn(i: int) -> tuple:
             p = parts[i]
             kp = KIT_PARTS.get(p["kind"])
-            size_val = (kp.diameter if kp and kp.shape == "bolt" else (kp.across_flats if kp else 0.03))
+            size_val = (
+                kp.diameter
+                if kp and kp.shape == "bolt"
+                else (kp.outer_diameter if kp and kp.shape == "washer" else (kp.across_flats if kp else 0.03))
+            )
             xy = np.asarray(p["position"][:2], float)
             d_tray = float(np.linalg.norm(xy - tray_xy))
             d_rob = float(np.linalg.norm(xy))
             moved = goal_moved[i]
             moved_score = 1 if moved is True else (-1 if moved is False else 0)
-            col_ok = 1 if (prefer_color and p.get("color") == prefer_color) else 0
+            p_mat = normalize_material_name(p.get("material")) or normalize_material_name(p.get("color"))
+            mat_scores = p.get("material_scores") if isinstance(p.get("material_scores"), dict) else {}
+            mat_ok = 0.0
+            if prefer_material:
+                if p_mat == prefer_material:
+                    mat_ok += 1.0
+                mat_ok += float(mat_scores.get(prefer_material, 0.0))
+            elif prefer_color and p.get("color") == prefer_color:
+                mat_ok += 1.0
             # Primary: explicit instruction attribute, reinforced by goal_moved
             attr = 0.0
             if prefer_small:
@@ -1969,31 +1994,30 @@ def _assign_roles(
                 attr = -d_tray
             elif prefer_near_robot:
                 attr = -d_rob
-            return (col_ok, moved_score, attr, float(p["confidence"]))
+            return (round(mat_ok, 3), moved_score, attr, float(p["confidence"]))
 
         return max(cands, key=key_fn)
 
-    # Color cues in instruction
-    bolt_color = None
-    nut_color = None
-    if re.search(r"\bgold\s+bolt\b", text):
-        bolt_color = "gold"
-    elif re.search(r"\b(silver|grey|gray)\s+bolt\b", text):
-        bolt_color = "silver"
-    if re.search(r"\bgold\s+nut\b", text):
-        nut_color = "gold"
+    bolt_mat, bolt_color = extract_part_material_and_color(text, "bolt")
+    nut_mat, nut_color = extract_part_material_and_color(text, "nut")
+    wash_mat, wash_color = extract_part_material_and_color(text, "washer")
 
     # Match washer target
     if wants_washer:
         w_idxs = [i for i, p in enumerate(parts) if p["shape"] == "washer"]
+        big_w = [i for i in w_idxs if "m33" in parts[i]["kind"] or "m30" in parts[i]["kind"]]
+        if wants_tray and big_w:
+            w_idxs = big_w
         if not w_idxs:
-            # Fallback: lowest flat white/light part that moved in goal
             w_idxs = [i for i, p in enumerate(parts) if p["color"] in ("white", "silver", "grey") and goal_moved[i] is True]
-        pick = _pick_best(w_idxs)
+        pick = _pick_best(w_idxs, prefer_color=wash_color, prefer_material=wash_mat)
         if pick is not None:
             parts[pick]["role"] = "target"
             if wants_tray:
                 parts[pick]["target_seat"] = "tray"
+            for j in [i for i, p in enumerate(parts) if p["shape"] == "washer"]:
+                if j != pick:
+                    parts[j]["role"] = "decoy"
 
     # Match bolt target
     if wants_bolt:
@@ -2005,6 +2029,7 @@ def _assign_roles(
             prefer_near_tray=wants_near_tray,
             prefer_near_robot=wants_near_robot,
             prefer_color=bolt_color,
+            prefer_material=bolt_mat,
         )
         if pick is not None:
             parts[pick]["role"] = "target"
@@ -2012,7 +2037,13 @@ def _assign_roles(
                 parts[pick]["target_seat"] = "tray"
             elif wants_hole:
                 kind = parts[pick]["kind"]
-                seat_map = {"bolt_m16x50": "bore_m16", "bolt_m24x50": "bore_m24", "bolt_m30x60": "bore_m30"}
+                seat_map = {
+                    "bolt_m16x50": "bore_m16",
+                    "bolt_m24x70": "bore_m24",
+                    "bolt_m30x100": "bore_m30",
+                    "bolt_m24x50": "bore_m24",
+                    "bolt_m30x60": "bore_m30",
+                }
                 parts[pick]["target_seat"] = seat_map.get(kind, "bore_m16")
             for j in b_idxs:
                 if j != pick:
@@ -2021,7 +2052,11 @@ def _assign_roles(
     # Match nut target
     if wants_nut:
         n_idxs = [i for i, p in enumerate(parts) if p["shape"] == "nut"]
-        pick = _pick_best(n_idxs, prefer_color=nut_color)
+        if wants_pocket:
+            pocket_nuts = [i for i in n_idxs if any(sz in parts[i]["kind"] for sz in ("m24", "m30", "m36"))]
+            if pocket_nuts:
+                n_idxs = pocket_nuts
+        pick = _pick_best(n_idxs, prefer_color=nut_color, prefer_material=nut_mat)
         if pick is not None:
             parts[pick]["role"] = "target"
             if wants_tray:
@@ -2030,6 +2065,9 @@ def _assign_roles(
                 kind = parts[pick]["kind"]
                 seat_map = {"nut_m24": "hex_m24", "nut_m30": "hex_m30", "nut_m36": "hex_m36"}
                 parts[pick]["target_seat"] = seat_map.get(kind, "hex_m30")
+            for j in [i for i, p in enumerate(parts) if p["shape"] == "nut"]:
+                if j != pick:
+                    parts[j]["role"] = "decoy"
 
     # If no instruction was given, still tag parts absent in goal as "target"
     if not (wants_washer or wants_bolt or wants_nut):
@@ -2045,31 +2083,24 @@ def _assign_roles(
 def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
     """Estimate 3D poses of tabletop parts and fixture seats from a wire observation.
 
-    Parameters
-    ----------
-    obs : dict
-        Wire observation containing:
-          - `images`: dict with keys `"left"`, `"right"`, `"wrist"` (base64 JPEG or uint8 RGB ndarray)
-          - `goal`: optional 640x480 base64 JPEG or uint8 RGB ndarray
-          - `proprio`: dict with `joint_pos`, `ee_pos`, `ee_quat`, `gripper`
-          - `instruction`: optional str
-
-    Returns
-    -------
-    dict with keys:
-      - `parts`: list of `{kind, position, axis, yaw, confidence, role, ...}`
-      - `seats`: dict of seat_id (`tray`, `bore_m16`, `bore_m24`, `bore_m30`, `hex_m24`, `hex_m30`, `hex_m36`) -> `[x, y, z]`
-      - `fixture_yaw`: float (radians)
-      - `fixture_position`: `[x, y, z]`
-      - `fixture_confidence`: float
-      - `seat_meta`: dict of detailed seat dimensions & heights
-      - `camera_calibration`: dict of estimated side-camera calibration offsets
+    Uses the learned YOLO-pose detector (`$RC_WEIGHTS_DIR/perception/detector.pt`) when enabled
+    (`RC_DETECTOR != '0'`) and confident; otherwise falls back to the classical perception pipeline.
     """
+    if isinstance(obs, dict):
+        try:
+            from . import detector as _det
+
+            if _det.detector_enabled() and _det.detector_weights_path().is_file():
+                det_res = _det.estimate_scene_from_detector(obs)
+                if det_res is not None:
+                    return det_res
+        except Exception:  # noqa: BLE001
+            pass
+
     raw_images = obs.get("images") or {}
     img_left = _decode_image(raw_images.get("left"))
     img_right = _decode_image(raw_images.get("right"))
     img_wrist = _decode_image(raw_images.get("wrist"))
-    img_overhead = _decode_image(raw_images.get("overhead"))
     img_goal = _decode_image(obs.get("goal"))
     proprio = obs.get("proprio") or {}
     instruction = str(obs.get("instruction") or "")
@@ -2089,13 +2120,6 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
             nom_cams[name] = cam
             maps_by_view[name] = _edge_maps(img)
             rob_masks_nom[name] = _project_capsules_mask(capsules, cam, pad_px=5.0)
-
-    overhead_cam = None
-    if img_overhead is not None:
-        Ho, Wo = img_overhead.shape[:2]
-        overhead_cam = Camera("overhead", np.array(TOP_CAMERA_POS, float), _xyaxes_to_mat(TOP_CAMERA_XYAXES), TOP_CAMERA_FOVY, Wo, Ho)
-        maps_by_view["overhead"] = _edge_maps(img_overhead)
-        rob_masks_nom["overhead"] = _project_capsules_mask(capsules, overhead_cam, pad_px=5.0)
 
     wrist_cam = None
     if img_wrist is not None:
@@ -2123,9 +2147,6 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
                 sf, _, gf, gc = maps_by_view[name]
                 rm = _project_capsules_mask(capsules, pre_cams[name], pad_px=5.0)
                 fit_views.append((pre_cams[name], sf, gf, gc, rm))
-        if overhead_cam is not None:
-            sf, _, gf, gc = maps_by_view["overhead"]
-            fit_views.append((overhead_cam, sf, gf, gc, rob_masks_nom["overhead"]))
         if fit_views:
             fixture_xyyaw, fix_conf = _fit_fixture_pose(fit_views)
         else:
@@ -2146,10 +2167,6 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
             cam_cal_info[name] = info
             rob_masks[name] = _project_capsules_mask(capsules, cam_cal, pad_px=4.0)
 
-    if overhead_cam is not None:
-        cams["overhead"] = overhead_cam
-        rob_masks["overhead"] = rob_masks_nom["overhead"]
-
     if wrist_cam is not None and img_wrist is not None:
         cams["wrist"] = wrist_cam
         # Mask out the gripper fingers at the bottom corners of the wrist camera frame
@@ -2162,8 +2179,6 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
     blobs_per_view: dict[str, list[Blob2D]] = {}
     view_ctxs: dict[str, dict[str, Any]] = {}
     seg_views = [("left", img_left), ("right", img_right)]
-    if img_overhead is not None and "overhead" in cams:
-        seg_views.append(("overhead", img_overhead))
     if img_wrist is not None and "wrist" in cams and (img_left is None or img_right is None):
         seg_views.append(("wrist", img_wrist))
     for name, img in seg_views:
@@ -2202,7 +2217,7 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
         used_l.add(il)
         matched_clusters.append(({"right": b_right[ir], "left": b_left[il]}, pt3, epi, False))
 
-    # 6. Occlusion-aware handling for unmatched single-view blobs (including overhead/wrist fallback)
+    # 6. Occlusion-aware handling for unmatched single-view blobs (including wrist fallback)
     def _is_occluded_in_view(pt_w: np.ndarray, target_view: str) -> bool:
         if target_view not in cams or target_view not in view_ctxs:
             return True
@@ -2264,16 +2279,13 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
                     occ = False
             matched_clusters.append((bmap, pt_est, epi_est, occ))
 
-    # Fallback for two_view (overhead + wrist) or wrist-only when neither side camera is present
-    if not matched_clusters and ("overhead" in blobs_per_view or "wrist" in blobs_per_view):
-        for v_fb in ("overhead", "wrist"):
-            if v_fb not in blobs_per_view:
-                continue
-            cam_fb = cams[v_fb]
-            for b in blobs_per_view[v_fb]:
-                hit = cam_fb.intersect_z(b.centroid_uv[0], b.centroid_uv[1], 0.014)
-                if hit is not None and 0.36 <= hit[0] <= 1.07 and -0.47 <= hit[1] <= 0.45:
-                    matched_clusters.append(({v_fb: b}, hit, 0.015, True))
+    # Fallback for wrist-only when neither side camera is present
+    if not matched_clusters and "wrist" in blobs_per_view:
+        cam_fb = cams["wrist"]
+        for b in blobs_per_view["wrist"]:
+            hit = cam_fb.intersect_z(b.centroid_uv[0], b.centroid_uv[1], 0.014)
+            if hit is not None and 0.36 <= hit[0] <= 1.07 and -0.47 <= hit[1] <= 0.45:
+                matched_clusters.append(({"wrist": b}, hit, 0.015, True))
 
     # 7. Fit 3D kit part & pose for each cluster
     parts_out: list[dict[str, Any]] = []
@@ -2308,7 +2320,7 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
             fit["pose"] != "leaning"
             and (FIXTURE_XM + 0.005 <= plx <= FIXTURE_X1 - 0.005)
             and (FIXTURE_Y0 + 0.005 <= ply <= FIXTURE_Y1 - 0.005)
-            and float(pos_np[2]) < 0.050
+            and float(pos_np[2]) < 0.085
         ):
             continue
         # Filter weak single-view false positives
@@ -2324,6 +2336,9 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
         else:
             conf = float(np.clip(0.25 + 0.55 * fit["iou"] - (0.05 if is_occ else 0.15), 0.1, 0.88))
 
+        sub_mat_map = {"gold": "brass", "white": "nylon", "silver": "aluminium", "grey": "stainless steel"}
+        est_mat = sub_mat_map.get(ref_blob.sub_color, "aluminium")
+
         # Deduplicate against already added parts (within 22mm)
         dup = False
         for prev in parts_out:
@@ -2331,6 +2346,7 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
                 if conf > prev["confidence"]:
                     prev.update({
                         "kind": fit["kind"], "shape": fit["shape"], "color": ref_blob.sub_color,
+                        "material": est_mat,
                         "pose": fit["pose"], "position": pos_np.tolist(),
                         "axis": np.asarray(fit["axis"], float).tolist(),
                         "yaw": float(fit["yaw"]), "confidence": conf,
@@ -2343,6 +2359,7 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
                 "kind": fit["kind"],
                 "shape": fit["shape"],
                 "color": ref_blob.sub_color,
+                "material": est_mat,
                 "pose": fit["pose"],
                 "position": pos_np.tolist(),
                 "axis": np.asarray(fit["axis"], float).tolist(),
@@ -2383,5 +2400,6 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
         "camera_calibration": cam_cal_info,
         # vlm-local patch: expose the calibrated cameras so the VLM overlay can project parts/seats
         # onto the same pixels the model sees.
-        "cameras": {k: c for k, c in cams.items() if k in ("left", "right", "overhead")},
+        "cameras": {k: c for k, c in cams.items() if k in ("left", "right")},
+        "perception_source": "classical",
     }

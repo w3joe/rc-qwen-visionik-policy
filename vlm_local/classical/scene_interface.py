@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import math
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,10 +19,10 @@ import numpy as np
 
 from .kinematics import wrap_angle
 
-# Public fixture v3 geometry (from assets/fixture/fixture_v3.json, converted to metres)
-NOMINAL_FIXTURE_XY = np.array([0.70, 0.10], dtype=np.float64)
+# Public fixture v3 rev-3 geometry (from assets/fixture/fixture_v3.json & fixture.py, converted to metres)
+NOMINAL_FIXTURE_XY = np.array([0.66, 0.15], dtype=np.float64)
 FIXTURE_HALF_FOOTPRINT = (0.125, 0.115)
-FIXTURE_BLOCK_TOP_Z = 0.075
+FIXTURE_BLOCK_TOP_Z = 0.115
 FIXTURE_BLOCK_Y_MIN = -0.115
 TRAY_FLOOR_Z = 0.004
 TRAY_WALL_TOP_Z = 0.022
@@ -39,16 +40,16 @@ SEAT_LOCAL_GEOM: dict[str, dict[str, Any]] = {
     "bore_m24": {
         "kind": "hole_vertical",
         "local_xy": (0.0072, 0.0860),
-        "floor_z": 0.020,
-        "top_z": 0.075,
+        "floor_z": 0.040,
+        "top_z": 0.115,
         "diameter": 0.028,
         "chamfer": 0.008,
     },
     "bore_m16": {
         "kind": "hole_vertical",
         "local_xy": (0.0072, 0.0035),
-        "floor_z": 0.020,
-        "top_z": 0.075,
+        "floor_z": 0.060,
+        "top_z": 0.115,
         "diameter": 0.020,
         "chamfer": 0.008,
     },
@@ -56,37 +57,37 @@ SEAT_LOCAL_GEOM: dict[str, dict[str, Any]] = {
         "kind": "hole_vertical",
         "local_xy": (0.0072, -0.0825),
         "floor_z": 0.010,
-        "top_z": 0.075,
+        "top_z": 0.115,
         "diameter": 0.035,
         "chamfer": 0.008,
     },
     "hex_m30": {
         "kind": "hex_pocket",
         "local_xy": (0.07735, 0.0775),
-        "floor_z": 0.062,
-        "top_z": 0.075,
+        "floor_z": 0.102,
+        "top_z": 0.115,
         "across_flats": 0.051,
         "chamfer": 0.004,
     },
     "hex_m36": {
         "kind": "hex_pocket",
         "local_xy": (0.07735, -0.0050),
-        "floor_z": 0.060,
-        "top_z": 0.075,
+        "floor_z": 0.100,
+        "top_z": 0.115,
         "across_flats": 0.060,
         "chamfer": 0.004,
     },
     "hex_m24": {
         "kind": "hex_pocket",
         "local_xy": (0.07735, -0.0825),
-        "floor_z": 0.065,
-        "top_z": 0.075,
+        "floor_z": 0.105,
+        "top_z": 0.115,
         "across_flats": 0.041,
         "chamfer": 0.004,
     },
 }
 
-# Public fastener kit dimensions (from assets/fasteners/manifest.json)
+# Public SimReady fastener kit dimensions (from assets/fasteners/manifest.json) + legacy aliases
 FASTENER_GEOM: dict[str, dict[str, float]] = {
     "bolt_m16x50": {
         "diameter": 0.016,
@@ -97,6 +98,26 @@ FASTENER_GEOM: dict[str, dict[str, float]] = {
         "under_head_x": 0.020,
         "tip_x": -0.030,
         "lying_radius": 0.012,
+    },
+    "bolt_m24x70": {
+        "diameter": 0.024,
+        "across_flats": 0.036,
+        "length": 0.070,
+        "head_height": 0.015,
+        "head_local_x": 0.035,
+        "under_head_x": 0.0275,
+        "tip_x": -0.0425,
+        "lying_radius": 0.018,
+    },
+    "bolt_m30x100": {
+        "diameter": 0.030,
+        "across_flats": 0.046,
+        "length": 0.100,
+        "head_height": 0.0187,
+        "head_local_x": 0.050,
+        "under_head_x": 0.04065,
+        "tip_x": -0.05935,
+        "lying_radius": 0.023,
     },
     "bolt_m24x50": {
         "diameter": 0.024,
@@ -118,10 +139,17 @@ FASTENER_GEOM: dict[str, dict[str, float]] = {
         "tip_x": -0.03935,
         "lying_radius": 0.023,
     },
+    "nut_m12": {"across_flats": 0.018, "thickness": 0.0108, "hole": 0.012, "lying_radius": 0.0054},
+    "nut_m16": {"across_flats": 0.024, "thickness": 0.0148, "hole": 0.016, "lying_radius": 0.0074},
+    "nut_m20": {"across_flats": 0.030, "thickness": 0.0180, "hole": 0.020, "lying_radius": 0.0090},
     "nut_m24": {"across_flats": 0.036, "thickness": 0.0215, "hole": 0.024, "lying_radius": 0.01075},
     "nut_m30": {"across_flats": 0.046, "thickness": 0.0256, "hole": 0.030, "lying_radius": 0.0128},
     "nut_m36": {"across_flats": 0.055, "thickness": 0.0310, "hole": 0.036, "lying_radius": 0.0155},
-    "washer_m30": {"outer_diameter": 0.062, "inner_diameter": 0.035, "thickness": 0.006, "lying_radius": 0.003},
+    "washer_m12": {"outer_diameter": 0.024, "inner_diameter": 0.013, "thickness": 0.0025, "lying_radius": 0.00125},
+    "washer_m16": {"outer_diameter": 0.030, "inner_diameter": 0.017, "thickness": 0.0030, "lying_radius": 0.0015},
+    "washer_m20": {"outer_diameter": 0.037, "inner_diameter": 0.021, "thickness": 0.0030, "lying_radius": 0.0015},
+    "washer_m33": {"outer_diameter": 0.060, "inner_diameter": 0.034, "thickness": 0.0050, "lying_radius": 0.0025},
+    "washer_m30": {"outer_diameter": 0.062, "inner_diameter": 0.035, "thickness": 0.0060, "lying_radius": 0.0030},
 }
 
 
@@ -311,7 +339,7 @@ def normalize_scene(raw: Any) -> SceneEstimate:
     for k, v in raw_seats.items():
         canon_k = _SEAT_ALIASES.get(str(k).strip().lower(), str(k).strip())
         if canon_k in SEAT_LOCAL_GEOM:
-            default_z = float(SEAT_LOCAL_GEOM[canon_k].get("top_z", 0.075))
+            default_z = float(SEAT_LOCAL_GEOM[canon_k].get("top_z", FIXTURE_BLOCK_TOP_Z))
             vec = _safe_vec3(v, default=np.array([0.0, 0.0, default_z]))
             if vec is not None:
                 seats_in[canon_k] = vec
@@ -367,6 +395,9 @@ def normalize_scene(raw: Any) -> SceneEstimate:
         if pos is None:
             continue
         raw_kind = str(item.get("kind", "unknown"))
+        cls_override = item.get("class_name") or item.get("size_class")
+        if cls_override and raw_kind.strip().lower() in ("bolt", "nut", "washer", "unknown"):
+            raw_kind = str(cls_override)
         kind = _canonical_kind(raw_kind)
 
         try:
@@ -440,16 +471,50 @@ def normalize_scene(raw: Any) -> SceneEstimate:
     )
 
 
+def normalize_material_name(raw: Any) -> str | None:
+    s = str(raw or "").strip().lower().replace("_", " ")
+    if not s:
+        return None
+    if s in ("brass", "gold", "yellow"):
+        return "brass"
+    if s in ("nylon", "white"):
+        return "nylon"
+    if s in ("aluminium", "aluminum", "silver", "light grey", "light gray"):
+        return "aluminium"
+    if s in ("stainless steel", "stainless", "steel", "grey", "gray", "mid grey", "mid gray"):
+        return "stainless steel"
+    return None
+
+
+def extract_part_material_and_color(instr: str, part_word: str) -> tuple[str | None, str | None]:
+    """Extract `(material_hint, colour_hint)` directly modifying `part_word` ('bolt', 'nut', 'washer')."""
+    text = (instr or "").lower()
+    pat = (
+        r"\b(stainless\s+steel|stainless|brass|gold|yellow|nylon|white|aluminium|aluminum|silver|grey|gray)"
+        r"(?:\s+(?:small(?:er|est)?|large(?:r|st)?|big(?:ger|gest)?))?\s+"
+        + re.escape(part_word.lower())
+        + r"\b"
+    )
+    m = re.search(pat, text)
+    if not m:
+        return None, None
+    tok = m.group(1)
+    mat = normalize_material_name(tok)
+    col_map = {"brass": "gold", "nylon": "white", "aluminium": "silver", "stainless steel": "grey"}
+    return mat, col_map.get(mat or "")
+
+
 @dataclass(frozen=True)
 class GoalSpec:
     """One pick-and-place subgoal derived purely from public task_id and instruction."""
 
     goal_id: str
     part_kind: str  # "bolt", "washer", "nut"
-    part_model: str  # e.g. "bolt_m30x60", "washer_m30", "bolt_m16x50", "nut_m30"
+    part_model: str  # e.g. "bolt_m30x100", "washer_m33", "bolt_m16x50", "nut_m30"
     seat_id: str  # "tray", "bore_m16", "hex_m30", etc.
-    selector: str = "default"  # "default", "smaller_bolt", "nearer_tray_bolt", "nut"
+    selector: str = "default"  # "default", "smaller_bolt", "larger_bolt", "nearer_tray_bolt", "nearer_robot_bolt", "nut"
     colour_hint: str | None = None
+    material_hint: str | None = None
 
 
 def parse_task_goals(obs: dict[str, Any]) -> list[GoalSpec]:
@@ -457,32 +522,40 @@ def parse_task_goals(obs: dict[str, Any]) -> list[GoalSpec]:
     task_id = str(obs.get("task_id") or "").strip().lower()
     instr = str(obs.get("instruction") or "").strip().lower()
 
+    bolt_mat, bolt_col = extract_part_material_and_color(instr, "bolt")
+    nut_mat, nut_col = extract_part_material_and_color(instr, "nut")
+    wash_mat, wash_col = extract_part_material_and_color(instr, "washer")
+
+    near_tray = any(p in instr for p in ("nearer the tray", "nearest the tray", "closer to the tray", "closest to the tray"))
+    near_robot = any(p in instr for p in ("nearer the robot", "nearest the robot", "closer to the robot", "closest to the robot"))
+
     if task_id == "bolt_to_tray" or ("tray" in instr and "pocket" not in instr and "hole" not in instr):
         if "washer" in instr:
             return [
                 GoalSpec(
                     goal_id="washer_to_tray",
                     part_kind="washer",
-                    part_model="washer_m30",
+                    part_model="washer_m33",
                     seat_id="tray",
                     selector="washer",
-                    colour_hint="white" if "white" in instr else None,
+                    colour_hint=wash_col,
+                    material_hint=wash_mat,
                 )
             ]
         return [
             GoalSpec(
                 goal_id="bolt_to_tray",
                 part_kind="bolt",
-                part_model="bolt_m30x60",
+                part_model="bolt_m30x100",
                 seat_id="tray",
                 selector="bolt",
-                colour_hint="gold" if "gold" in instr else None,
+                colour_hint=bolt_col,
+                material_hint=bolt_mat,
             )
         ]
 
     if task_id == "bolt_and_nut_to_fixture" or ("hole" in instr and "pocket" in instr):
-        bolt_sel = "nearer_tray_bolt" if "nearer the tray" in instr else "smaller_bolt"
-        nut_colour = "gold" if "gold nut" in instr else None
+        bolt_sel = "nearer_tray_bolt" if near_tray else ("nearer_robot_bolt" if near_robot else "smaller_bolt")
         return [
             GoalSpec(
                 goal_id="small_bolt_to_bore_m16",
@@ -490,6 +563,8 @@ def parse_task_goals(obs: dict[str, Any]) -> list[GoalSpec]:
                 part_model="bolt_m16x50",
                 seat_id="bore_m16",
                 selector=bolt_sel,
+                colour_hint=bolt_col,
+                material_hint=bolt_mat,
             ),
             GoalSpec(
                 goal_id="nut_to_hex_m30",
@@ -497,7 +572,8 @@ def parse_task_goals(obs: dict[str, Any]) -> list[GoalSpec]:
                 part_model="nut_m30",
                 seat_id="hex_m30",
                 selector="nut",
-                colour_hint=nut_colour,
+                colour_hint=nut_col,
+                material_hint=nut_mat,
             ),
         ]
 
@@ -505,20 +581,26 @@ def parse_task_goals(obs: dict[str, Any]) -> list[GoalSpec]:
     goals: list[GoalSpec] = []
     if "washer" in instr:
         seat = "tray" if "tray" in instr else "bore_m30"
-        goals.append(GoalSpec("washer_goal", "washer", "washer_m30", seat, "washer"))
+        goals.append(GoalSpec("washer_goal", "washer", "washer_m33", seat, "washer", wash_col, wash_mat))
     if "bolt" in instr:
-        if "tray" in instr:
-            goals.append(GoalSpec("bolt_tray_goal", "bolt", "bolt_m30x60", "tray", "bolt"))
+        if "tray" in instr and "hole" not in instr:
+            goals.append(GoalSpec("bolt_tray_goal", "bolt", "bolt_m30x100", "tray", "bolt", bolt_col, bolt_mat))
         else:
-            sel = "smaller_bolt" if "smaller" in instr else "bolt"
-            model = "bolt_m16x50" if "smaller" in instr else "bolt_m30x60"
-            seat = "bore_m16" if "smaller" in instr else "bore_m30"
-            goals.append(GoalSpec("bolt_hole_goal", "bolt", model, seat, sel))
+            is_small = "smaller" in instr or "smallest" in instr
+            is_large = "larger" in instr or "bigger" in instr or "largest" in instr
+            sel = (
+                "nearer_tray_bolt"
+                if near_tray
+                else ("nearer_robot_bolt" if near_robot else ("smaller_bolt" if is_small else ("larger_bolt" if is_large else "bolt")))
+            )
+            model = "bolt_m16x50" if is_small else ("bolt_m30x100" if is_large else "bolt_m16x50")
+            seat = "bore_m16" if is_small else ("bore_m30" if is_large else "bore_m16")
+            goals.append(GoalSpec("bolt_hole_goal", "bolt", model, seat, sel, bolt_col, bolt_mat))
     if "nut" in instr:
         seat = "tray" if "tray" in instr and not goals else "hex_m30"
-        goals.append(GoalSpec("nut_goal", "nut", "nut_m30", seat, "nut"))
+        goals.append(GoalSpec("nut_goal", "nut", "nut_m30", seat, "nut", nut_col, nut_mat))
     if not goals:
-        goals.append(GoalSpec("default_bolt", "bolt", "bolt_m30x60", "tray", "bolt"))
+        goals.append(GoalSpec("default_bolt", "bolt", "bolt_m30x100", "tray", "bolt", bolt_col, bolt_mat))
     return goals
 
 
@@ -540,10 +622,16 @@ def is_part_in_seat(part: PartEstimate, seat_id: str, scene: SceneEstimate) -> b
         return abs(u) <= hx - 0.005 and abs(v) <= hy - 0.005 and float(part.position[2]) < 0.06
     if kind == "hole_vertical":
         d_xy = float(np.linalg.norm(part.position[:2] - seat_xyz[:2]))
-        return d_xy < 0.018 and float(part.position[2]) > 0.035 and abs(float(part.axis[2])) > 0.85
+        top_z = float(geom.get("top_z", FIXTURE_BLOCK_TOP_Z))
+        floor_z = float(geom.get("floor_z", 0.040))
+        if part.kind == "washer":
+            return d_xy < 0.018 and abs(float(part.position[2]) - top_z) <= 0.012
+        return d_xy < 0.018 and float(part.position[2]) > max(0.035, floor_z + 0.010) and abs(float(part.axis[2])) > 0.80
     if kind == "hex_pocket":
         d_xy = float(np.linalg.norm(part.position[:2] - seat_xyz[:2]))
-        return d_xy < 0.018 and 0.065 <= float(part.position[2]) <= 0.0775
+        floor_z = float(geom.get("floor_z", 0.102))
+        top_z = float(geom.get("top_z", FIXTURE_BLOCK_TOP_Z))
+        return d_xy < 0.018 and (floor_z + 0.003) <= float(part.position[2]) <= (top_z + 0.0065)
     return False
 
 
@@ -562,17 +650,32 @@ def select_target_part(
     exclude_positions: list[np.ndarray] | None = None,
 ) -> PartEstimate | None:
     """Confidence-based selection of the best part matching `goal`."""
+    mat_hint = normalize_material_name(getattr(goal, "material_hint", None)) or normalize_material_name(
+        getattr(goal, "colour_hint", None)
+    )
+
     def _is_forbidden(p: PartEstimate) -> bool:
         role = (p.role or "").lower()
         rk = p.raw_kind.lower()
-        if goal.selector in ("smaller_bolt", "nearer_tray_bolt"):
+        if goal.selector in ("smaller_bolt", "nearer_tray_bolt", "nearer_robot_bolt") and goal.part_model == "bolt_m16x50":
             # Hard-reject explicitly classified decoys or wrong bolt sizes (e.g. M24 decoy left on table after M16 is seated)
             if role in ("large_bolt", "decoy", "decoy_bolt", "bolt_m24"):
                 return True
             if "m24" in rk or "m30" in rk or "large" in rk:
                 return True
+        elif goal.selector == "smaller_bolt":
+            if role in ("large_bolt", "decoy", "decoy_bolt"):
+                return True
+        elif goal.selector == "larger_bolt":
+            if role in ("small_bolt", "decoy", "decoy_bolt") or "m16" in rk:
+                return True
         elif goal.selector == "nut":
             if role in ("decoy", "clutter") and goal.part_model == "nut_m30":
+                return True
+            if goal.part_model == "nut_m30" and any(tag in rk for tag in ("m12", "m16", "m20")):
+                return True
+        elif goal.selector == "washer":
+            if goal.part_model in ("washer_m33", "washer_m30") and any(tag in rk for tag in ("m12", "m16", "m20")):
                 return True
         if exclude_positions:
             for ex in exclude_positions:
@@ -602,34 +705,59 @@ def select_target_part(
         ]
     if not candidates:
         return None
+
+    # Brass vs non-brass is visually unmistakable: filter strictly when multiple candidates or decoys may exist
+    if mat_hint is not None and len(candidates) > 1:
+        def _is_brass(p: PartEstimate) -> bool:
+            pm = normalize_material_name(p.extra.get("material")) or normalize_material_name(p.extra.get("color") or p.extra.get("colour"))
+            return pm == "brass"
+
+        if mat_hint == "brass":
+            brass_cands = [p for p in candidates if _is_brass(p)]
+            if brass_cands:
+                candidates = brass_cands
+        else:
+            non_brass = [p for p in candidates if not _is_brass(p)]
+            if non_brass:
+                candidates = non_brass
+
     if len(candidates) == 1:
         return candidates[0]
 
-    tray_xy = scene.seats.get("tray", np.array([0.6265, 0.10, 0.004]))[:2]
+    tray_xy = scene.seats.get("tray", np.array([0.5865, 0.15, 0.004]))[:2]
 
     def score_candidate(p: PartEstimate) -> float:
         s = 2.0 * p.confidence
         role = (p.role or "").lower()
         rk = p.raw_kind.lower()
         colour = str(p.extra.get("colour") or p.extra.get("color") or "").lower()
+        p_mat = normalize_material_name(p.extra.get("material")) or normalize_material_name(colour)
+        mat_scores = p.extra.get("material_scores") if isinstance(p.extra.get("material_scores"), dict) else {}
         target_seat = str(p.extra.get("target_seat") or "").lower()
 
         if target_seat and target_seat == goal.seat_id:
             s += 4.0
         if goal.colour_hint and goal.colour_hint in colour:
-            s += 1.5
+            s += 2.0
+        if mat_hint is not None:
+            if p_mat == mat_hint:
+                s += 4.5
+            if mat_hint in mat_scores:
+                s += 6.0 * float(mat_scores[mat_hint])
 
-        if goal.selector in ("smaller_bolt", "nearer_tray_bolt"):
+        if goal.selector in ("smaller_bolt", "nearer_tray_bolt", "nearer_robot_bolt"):
             if role in ("small_bolt", "target_bolt", "bolt_m16", "target"):
                 s += 10.0
-            if "m16" in rk or "small" in rk:
+            if goal.selector == "smaller_bolt" and ("m16" in rk or "small" in rk):
                 s += 8.0
-            # In bolt_and_nut_to_fixture, only the smaller M16 bolt ever leans against the fixture
-            if p.pose_hint == "leaning":
+            if p.pose_hint == "leaning" and goal.part_model == "bolt_m16x50":
                 s += 4.0
             if goal.selector == "nearer_tray_bolt":
                 d_tray = float(np.linalg.norm(p.position[:2] - tray_xy))
-                s -= 6.0 * d_tray
+                s -= 8.0 * d_tray
+            elif goal.selector == "nearer_robot_bolt":
+                d_rob = float(math.hypot(float(p.position[0]), float(p.position[1])))
+                s -= 8.0 * d_rob
             for size_key in ("diameter", "size", "length", "area", "pixel_area", "extent"):
                 val = p.extra.get(size_key)
                 if isinstance(val, (int, float)) and math.isfinite(val):
@@ -642,12 +770,19 @@ def select_target_part(
                         norm = (float(val) - min(vals)) / (max(vals) - min(vals))
                         s += 2.5 * (1.0 - norm)
                     break
+        elif goal.selector == "larger_bolt":
+            if role in ("target", "target_bolt"):
+                s += 8.0
+            if "m30" in rk:
+                s += 6.0
+            elif "m24" in rk:
+                s += 3.0
         elif goal.selector == "nut":
             if role in ("nut", "target_nut", "nut_m30", "target"):
                 s += 6.0
             if "m30" in rk:
                 s += 4.0
-            if "gold" in colour:
+            if goal.colour_hint == "gold" and "gold" in colour:
                 s += 2.0
         elif goal.selector in ("bolt", "washer"):
             if role in ("bolt", "washer", "target"):
