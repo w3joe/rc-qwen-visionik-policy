@@ -34,6 +34,7 @@ import numpy as np
 from .classical.kinematics import (PAD_HALF_WIDTH_X, PAD_TIP_BOLT_M16, PAD_TIP_BOLT_M24, PAD_TIP_BOLT_M30,
                                    PAD_TIP_CLOSED, PAD_TIP_NUT_FLAT, closest_hex_yaw, fk_pose, site_rot_from_zx,
                                    site_rot_from_zy, slerp_rot, wrap_angle)
+from .classical.cell import LAYOUT_SHIFT, reach_yaw
 from .classical.scene_interface import FASTENER_GEOM, SEAT_LOCAL_GEOM, PartEstimate, is_part_in_seat
 
 StepCommand = tuple  # (dq_6, gripper_01, want_vision_next_step)
@@ -161,7 +162,7 @@ class PlacementFinisher:
         top_z = float(sg["top_z"])
         z_s_held = float(held.ee_at_grasp[2] - held.axis_height)
         p_s_b = np.array([held.d_along, 0.0, z_s_held])
-        approach_xy = np.array([math.cos(fyaw), math.sin(fyaw), 0.0])
+        approach_xy = np.array([math.cos(reach_yaw(fyaw)), math.sin(reach_yaw(fyaw)), 0.0])  # away from the base
         rot = site_rot_from_zx(approach_xy, np.array([0.0, 0.0, -1.0]))
         off = rot @ p_s_b
         pad_tip = bolt_pad_tip(held.model)
@@ -402,7 +403,7 @@ class PlacementFinisher:
             return False, f"perched d_xy={float(np.linalg.norm(q.position[:2] - seat_xy)):.3f} z={float(q.position[2]):.3f}"
         # not near the seat: the tracked part (selected the way the controller selects it) found elsewhere = fell out
         elsewhere = c._select(goal, min_confidence=0.60, ignore_seated=True) if goal is not None else None
-        if elsewhere is not None and float(elsewhere.position[1]) < 0.05:
+        if elsewhere is not None and float(elsewhere.position[1]) < 0.05 + LAYOUT_SHIFT[1]:
             return False, f"fell_out at {np.round(elsewhere.position[:2], 3).tolist()}"
         # nothing seen near the seat and nothing seen elsewhere: cannot confirm the part is seated -> treat as unverified
         # (the controller re-observes and only re-grasps if it then finds an un-seated part, so a hidden seated part costs steps only)

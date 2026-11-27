@@ -17,6 +17,7 @@ import numpy as np
 
 from .classical.kinematics import (PAD_TIP_BOLT_M30, PAD_TIP_CLOSED, PAD_TIP_NUT_FLAT, PAD_TIP_WASHER, down_mat, fk_pose,
                                    nearest_pi_yaw)
+from .classical.cell import LAYOUT_SHIFT
 from .classical.planner import EpisodeController, StepCommand, _min_grip_for_part
 from .classical.scene_interface import (FASTENER_GEOM, SEAT_LOCAL_GEOM, TRAY_FLOOR_Z, PartEstimate, is_part_in_seat,
                                         select_target_part)
@@ -110,7 +111,7 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
         for ang in np.linspace(0, 2 * math.pi, 16, endpoint=False):
             for r in (0.09, 0.11):
                 c = ref_xy + r * np.array([math.cos(ang), math.sin(ang)])
-                if not (0.45 <= c[0] <= 1.0 and -0.42 <= c[1] <= 0.42) or math.hypot(*c) > 1.0:
+                if not (0.45 + LAYOUT_SHIFT[0] <= c[0] <= 1.0 + LAYOUT_SHIFT[0] and -0.42 + LAYOUT_SHIFT[1] <= c[1] <= 0.42 + LAYOUT_SHIFT[1]) or math.hypot(*c) > 1.0:
                     continue
                 d_fix = self.scene.fixture_distance(c) if self.scene is not None else 0.2
                 d_oth = min((float(np.linalg.norm(c - o)) for o in others), default=1.0)

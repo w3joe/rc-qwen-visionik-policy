@@ -26,25 +26,37 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from . import cell as _cell
+
 # ==============================================================================
 # Public Geometry & Nominal Camera Constants (from public participant engine)
 # ==============================================================================
 
-# Table top box: z = 0, x in [-0.24, 1.20], y in [-0.52, 0.52]
-TABLE_X = (-0.24, 1.20)
-TABLE_Y = (-0.52, 0.52)
+# Real cell (engine ad65e2e, cell.py): table top z = 0 in the world, robot base at (0, 0, 0.187).
+TABLE_X = _cell.TABLE_X
+TABLE_Y = _cell.TABLE_Y
 
-# Nominal side cameras (640x360, fovy 55 deg)
-SIDE_CAMERA_FOVY = 55.0
+# Nominal side cameras (640x360): the calibrated Gemini 336s. (eye, look-at) kept for legacy callers;
+# exact rotations come from `side_camera_pose` (cell.json xyaxes).
+SIDE_CAMERA_FOVY = _cell.SIDE_FOVY
+
+
+def _eye_target(name: str) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    pos, mat = _cell.side_camera_pose(name)
+    tgt = pos - mat[:, 2]
+    return tuple(float(v) for v in pos), tuple(float(v) for v in tgt)
+
+
 SIDE_CAMERA_POSES: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
-    "left": ((0.68, 0.66, 0.66), (0.73, -0.04, 0.03)),
-    "right": ((1.02, -0.62, 0.65), (0.73, -0.04, 0.03)),
+    n: _eye_target(n) for n in ("left", "right")
 }
+side_camera_pose = _cell.side_camera_pose
 
-# Fixed goal camera (640x480, fovy 50 deg, zero tripod jitter)
-GOAL_CAMERA_POS = (0.42, -0.52, 0.52)
-GOAL_CAMERA_TARGET = (0.74, -0.03, 0.03)
-GOAL_CAMERA_FOVY = 50.0
+# Goal views are the same three cameras (schema v3 `goal` dict); the single-image goal paths use the
+# left view through the nominal left camera.
+GOAL_VIEW = "left"
+GOAL_CAMERA_POS, GOAL_CAMERA_TARGET = SIDE_CAMERA_POSES[GOAL_VIEW]
+GOAL_CAMERA_FOVY = _cell.SIDE_FOVY
 
 # Wrist camera rigid mount relative to tool0 and gripperframe (ee)
 GRIPPER_SPACER_M = 0.0244
@@ -53,10 +65,11 @@ GRIPPERFRAME_POS = (0.0, 0.0, 0.100)
 GRIPPERFRAME_QUAT = (0.7071067811865476, 0.0, 0.0, -0.7071067811865476)  # Rz(-90 deg)
 WRIST_CAMERA_POS = (0.0140, 0.1103, 0.0649)
 WRIST_CAMERA_XYAXES = (-1.0, 0.0, 0.0, 0.0, 0.92388, 0.38268)
-WRIST_CAMERA_FOVY = 55.0
+WRIST_CAMERA_FOVY = _cell.WRIST_FOVY
 
 # Printed fixture v3 rev-3 geometry (metres, fixture-local: origin at footprint centre on z=0)
-FIXTURE_ORIGIN = (0.66, 0.15, 0.0)
+FIXTURE_ORIGIN = (_cell.FIXTURE_NOMINAL_XY[0], _cell.FIXTURE_NOMINAL_XY[1], 0.0)
+FIXTURE_NOMINAL_YAW = _cell.FIXTURE_NOMINAL_YAW
 FIXTURE_X0, FIXTURE_XM, FIXTURE_X1 = -0.125, -0.026, 0.125
 FIXTURE_Y0, FIXTURE_Y1 = -0.115, 0.115
 FIXTURE_TRAY_FLOOR_Z = 0.004
@@ -170,6 +183,10 @@ KIT_PARTS: dict[str, KitPart] = {
 def _decode_image(img: Any) -> np.ndarray | None:
     if img is None:
         return None
+    if isinstance(img, dict):  # schema v3 goal: {"wrist", "left", "right"}
+        img = img.get(GOAL_VIEW) or next((v for v in img.values() if v), None)
+        if img is None:
+            return None
     if isinstance(img, np.ndarray):
         if img.ndim == 3 and img.shape[2] >= 3:
             return np.asarray(img[..., :3], dtype=np.uint8)
@@ -295,7 +312,7 @@ class Camera:
 def _wrist_camera_from_proprio(proprio: dict[str, Any] | None, width: int = 640, height: int = 360) -> Camera | None:
     if not proprio or "ee_pos" not in proprio or "ee_quat" not in proprio:
         return None
-    p_w_ee = np.asarray(proprio["ee_pos"], float)
+    p_w_ee = np.asarray(proprio["ee_pos"], float) + _cell.BASE_WORLD  # base frame -> world
     R_w_ee = _quat_to_mat(proprio["ee_quat"])
     p_t_ee = np.array([0.0, 0.0, GRIPPER_SPACER_M + BASE_MOUNT_Z_M + GRIPPERFRAME_POS[2]], dtype=float)
     R_t_ee = _quat_to_mat(GRIPPERFRAME_QUAT)
@@ -661,9 +678,7 @@ def _calibrate_side_camera(
     robot_mask: np.ndarray | None,
     fixture_xyyaw: np.ndarray | None,
 ) -> tuple[Camera, dict[str, Any]]:
-    eye, target = SIDE_CAMERA_POSES[cam_name]
-    nom_pos = np.array(eye, float)
-    nom_mat = _look_mat(eye, target)
+    nom_pos, nom_mat = side_camera_pose(cam_name)
     H, W = img.shape[:2]
     f = 0.5 * H / math.tan(math.radians(SIDE_CAMERA_FOVY) * 0.5)
     cx, cy = 0.5 * W, 0.5 * H
@@ -2114,9 +2129,9 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
     rob_masks_nom: dict[str, np.ndarray] = {}
     for name, img in (("left", img_left), ("right", img_right)):
         if img is not None:
-            eye, target = SIDE_CAMERA_POSES[name]
             H, W = img.shape[:2]
-            cam = Camera(name, np.array(eye, float), _look_mat(eye, target), SIDE_CAMERA_FOVY, W, H)
+            _p, _m = side_camera_pose(name)
+            cam = Camera(name, _p, _m, SIDE_CAMERA_FOVY, W, H)
             nom_cams[name] = cam
             maps_by_view[name] = _edge_maps(img)
             rob_masks_nom[name] = _project_capsules_mask(capsules, cam, pad_px=5.0)
@@ -2150,7 +2165,7 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
         if fit_views:
             fixture_xyyaw, fix_conf = _fit_fixture_pose(fit_views)
         else:
-            fixture_xyyaw = np.array([FIXTURE_ORIGIN[0], FIXTURE_ORIGIN[1], 0.0])
+            fixture_xyyaw = np.array([FIXTURE_ORIGIN[0], FIXTURE_ORIGIN[1], FIXTURE_NOMINAL_YAW])
             fix_conf = 0.0
 
     fx, fy, fyaw = float(fixture_xyyaw[0]), float(fixture_xyyaw[1]), float(fixture_xyyaw[2])
@@ -2202,7 +2217,7 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
                 pt3, epi = _triangulate_rays([o_r, o_l], [d_r, d_l])
                 if epi > 0.024:
                     continue
-                if not (0.36 <= pt3[0] <= 1.07 and -0.47 <= pt3[1] <= 0.45 and -0.012 <= pt3[2] <= 0.090):
+                if not (0.36 <= pt3[0] <= 1.07 and -0.47 + _cell.LAYOUT_SHIFT[1] <= pt3[1] <= 0.45 and -0.012 <= pt3[2] <= 0.090):
                     continue
                 pairs.append((epi, ir, il, pt3))
     pairs.sort(key=lambda t: t[0])
@@ -2253,7 +2268,7 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
             hit = cam_s.intersect_z(b.centroid_uv[0], b.centroid_uv[1], 0.014)
             if hit is None:
                 continue
-            if not (0.36 <= hit[0] <= 1.07 and -0.47 <= hit[1] <= 0.45):
+            if not (0.36 <= hit[0] <= 1.07 and -0.47 + _cell.LAYOUT_SHIFT[1] <= hit[1] <= 0.45):
                 continue
             occ = _is_occluded_in_view(hit, v_other)
             if not (occ or b.color_family == "gold" or (b.boundary_grad > 38.0 and b.max_lum > 180.0)):
@@ -2270,7 +2285,7 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
                         continue
                     o_w, d_w = cams["wrist"].unproject_ray(*bw.centroid_uv)
                     pw, ew = _triangulate_rays([o_s, o_w], [d_s, d_w])
-                    if ew < 0.020 and 0.36 <= pw[0] <= 1.07 and -0.47 <= pw[1] <= 0.45 and -0.01 <= pw[2] <= 0.08:
+                    if ew < 0.020 and 0.36 <= pw[0] <= 1.07 and -0.47 + _cell.LAYOUT_SHIFT[1] <= pw[1] <= 0.45 and -0.01 <= pw[2] <= 0.08:
                         if best_w is None or ew < best_w[0]:
                             best_w = (ew, pw, bw)
                 if best_w is not None:
@@ -2284,7 +2299,7 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
         cam_fb = cams["wrist"]
         for b in blobs_per_view["wrist"]:
             hit = cam_fb.intersect_z(b.centroid_uv[0], b.centroid_uv[1], 0.014)
-            if hit is not None and 0.36 <= hit[0] <= 1.07 and -0.47 <= hit[1] <= 0.45:
+            if hit is not None and 0.36 <= hit[0] <= 1.07 and -0.47 + _cell.LAYOUT_SHIFT[1] <= hit[1] <= 0.45:
                 matched_clusters.append(({"wrist": b}, hit, 0.015, True))
 
     # 7. Fit 3D kit part & pose for each cluster

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Program-form policy server for docs/api.md (contract v0, schema v2): VLM planner + vision-IK controller.
+"""Program-form policy server for docs/api.md (contract v0, schema v3): VLM planner + vision-IK controller.
 
     # judged-style: model in-process from RC_WEIGHTS_DIR/qwen3_vl_8b (e.g. /weights/qwen3_vl_8b), no network
     python serve.py
@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-CONTRACT, SCHEMA_VERSION = "v0", 2
+CONTRACT, SCHEMA_VERSION = "v0", 3
 STATE: dict = {"ready": False, "error": None, "policy": None}
 LOCK = threading.Lock()
 PRIVATE = os.environ.get("RC_PRIVATE") == "1"

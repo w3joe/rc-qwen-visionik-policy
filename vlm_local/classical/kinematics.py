@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .cell import BASE_WORLD
+
 NUM_JOINTS = 6
 
 # Home joint configuration (rad) from embodiment.py / docs/api.md
@@ -261,7 +263,7 @@ class FKResult:
 def forward_kinematics(q: np.ndarray) -> FKResult:
     """Compute exact UR12e + 2F-140 forward kinematics for joint angles q (6,)."""
     q = np.asarray(q, dtype=np.float64)
-    p = np.zeros(3, dtype=np.float64)
+    p = BASE_WORLD.copy()  # robot base in the world (table top z = 0)
     R = _R_BASE_INERTIA.copy()
 
     j_pos = np.empty((6, 3), dtype=np.float64)

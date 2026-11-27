@@ -15,6 +15,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
+from .cell import BASE_WORLD, LAYOUT_SHIFT, reach_yaw, shifted
 from .kinematics import (
     HOME_Q,
     NUM_JOINTS,
@@ -80,6 +81,8 @@ def _extract_proprio(obs: dict[str, Any]) -> dict[str, Any]:
     ee_quat_raw = raw.get("ee_quat")
     if ee_pos_raw is not None and ee_quat_raw is not None:
         ee_pos = np.asarray(ee_pos_raw, dtype=np.float64).reshape(-1)
+        if ee_pos.size == 3:
+            ee_pos = ee_pos + BASE_WORLD  # observation is in the robot base frame
         ee_quat = np.asarray(ee_quat_raw, dtype=np.float64).reshape(-1)
         if ee_pos.size == 3 and np.all(np.isfinite(ee_pos)) and ee_quat.size == 4 and np.all(np.isfinite(ee_quat)):
             ee_rot = quat_to_mat(ee_quat)
@@ -282,7 +285,7 @@ class EpisodeController:
         cur_p, _ = fk_pose(self.q_target)
         if cur_p[2] < 0.28:
             yield from self._ensure_safe_height(0.28, grip)
-        vantage_pos = np.array([0.62, 0.14, 0.34], dtype=np.float64)
+        vantage_pos = np.array(shifted((0.62, 0.14, 0.34)), dtype=np.float64)
         vantage_rot = down_mat(0.0)
         # Solve near HOME_Q so we cleanly reset to the standard elbow-up wrist-down branch when empty
         q_v = self.ik.solve(vantage_pos, vantage_rot, HOME_Q).q
@@ -346,10 +349,10 @@ class EpisodeController:
                     continue
                 others.append(p.position[:2])
 
-        best_xy = np.array([0.66, -0.22], dtype=np.float64)
+        best_xy = np.array(shifted((0.66, -0.22)), dtype=np.float64)
         best_score = -1e9
-        for x in np.linspace(0.56, 0.84, 8):
-            for y in np.linspace(-0.34, -0.14, 7):
+        for x in np.linspace(0.56, 0.84, 8) + LAYOUT_SHIFT[0]:
+            for y in np.linspace(-0.34, -0.14, 7) + LAYOUT_SHIFT[1]:
                 p = np.array([x, y], dtype=np.float64)
                 if math.hypot(x, y) > 0.95:
                     continue
@@ -357,7 +360,7 @@ class EpisodeController:
                 if d_fix < 0.075:
                     continue
                 d_oth = min((float(np.linalg.norm(p - o)) for o in others), default=1.0)
-                score = min(d_fix, d_oth) - 0.1 * float(np.linalg.norm(p - np.array([0.70, -0.22])))
+                score = min(d_fix, d_oth) - 0.1 * float(np.linalg.norm(p - np.array(shifted((0.70, -0.22)))))
                 if score > best_score:
                     best_score = score
                     best_xy = p
@@ -508,6 +511,7 @@ class EpisodeController:
         ref_yaw: float,
     ) -> tuple[np.ndarray, np.ndarray, float, float, dict[str, Any]]:
         pos = part.position
+        fyaw = reach_yaw(fyaw)  # headings below were designed for a yaw-0 fixture (see cell.reach_yaw)
         if goal.part_kind == "washer":
             geom = FASTENER_GEOM["washer_m30"]
             grasp_yaw = nearest_pi_yaw(fyaw, ref_yaw)
@@ -679,6 +683,7 @@ class EpisodeController:
         """Grasp a leaning M16 bolt off the fixture -y face and lay it flat on clear table."""
         pos = part.position
         axis = part.axis.copy()
+        fyaw = reach_yaw(fyaw)  # lean face = the block face toward world -y
         # Ensure axis points down & away from fixture wall (toward head)
         w_out = np.array([math.sin(fyaw), -math.cos(fyaw), 0.0], dtype=np.float64)
         if float(axis[2]) > 0.0:
@@ -891,7 +896,7 @@ class EpisodeController:
 
             # Insertion orientation: bolt +axis (-x_site) -> [0, 0, +1] (so x_site = [0, 0, -1]),
             # z_site horizontal along +x_fixture (from tray toward block)
-            approach_xy = np.array([math.cos(fyaw), math.sin(fyaw), 0.0], dtype=np.float64)
+            approach_xy = np.array([math.cos(reach_yaw(fyaw)), math.sin(reach_yaw(fyaw)), 0.0], dtype=np.float64)
             rot_insert = site_rot_from_zx(approach_xy, np.array([0.0, 0.0, -1.0]))
             offset_s_to_b = rot_insert @ p_s_b
 
@@ -946,7 +951,7 @@ class EpisodeController:
             # Move to clear vantage (which captures 1 fresh unobstructed vision frame) and verify bolt is seated
             yield from self._move_to_vantage(grip=0.65)
             still_out = self._select(goal, min_confidence=0.60, ignore_seated=True)
-            if still_out is not None and float(still_out.position[1]) < 0.05:
+            if still_out is not None and float(still_out.position[1]) < 0.05 + LAYOUT_SHIFT[1]:
                 # Target small bolt fell back onto the -y table -> retry!
                 continue
             return
@@ -975,13 +980,13 @@ class EpisodeController:
             d = sign * n_ax
             cand = pos[:2] + 0.05 * d[:2]
             in_bounds = (
-                0.48 <= cand[0] <= 0.98
-                and -0.36 <= cand[1] <= -0.08
+                0.48 + LAYOUT_SHIFT[0] <= cand[0] <= 0.98 + LAYOUT_SHIFT[0]
+                and -0.36 + LAYOUT_SHIFT[1] <= cand[1] <= -0.08 + LAYOUT_SHIFT[1]
                 and math.hypot(float(cand[0]), float(cand[1])) <= 0.99
             )
             d_fix = self.scene.fixture_distance(cand) if self.scene is not None else 0.12
             d_oth = min((float(np.linalg.norm(cand - o)) for o in others), default=1.0)
-            score = (10.0 if in_bounds else 0.0) + min(d_fix, d_oth) - 0.5 * abs(float(cand[0]) - 0.85)
+            score = (10.0 if in_bounds else 0.0) + min(d_fix, d_oth) - 0.5 * abs(float(cand[0]) - (0.85 + LAYOUT_SHIFT[0]))
             if score > best_score:
                 best_score = score
                 best_dir = d
@@ -1185,7 +1190,7 @@ class EpisodeController:
             for i in range(10):
                 yield self._emit_hold(0.80, want_vision=(i == 8))
             still_out = self._select(goal, min_confidence=0.60, ignore_seated=True)
-            if still_out is not None and float(still_out.position[1]) < 0.05:
+            if still_out is not None and float(still_out.position[1]) < 0.05 + LAYOUT_SHIFT[1]:
                 continue
             return
 

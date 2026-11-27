@@ -23,12 +23,14 @@ from typing import Any
 
 import numpy as np
 
+from . import cell as _cell
 from .kinematics import HOME_Q, NUM_JOINTS, wrap_angle, wrist_camera_pose
 from .scene_interface import (
     FASTENER_GEOM,
     FIXTURE_BLOCK_TOP_Z,
     FIXTURE_BLOCK_Y_MIN,
     NOMINAL_FIXTURE_XY,
+    NOMINAL_FIXTURE_YAW,
     SEAT_LOCAL_GEOM,
     TRAY_FLOOR_Z,
 )
@@ -64,8 +66,8 @@ _configure_ultralytics_offline()
 
 # Nominal camera geometry from engine/rc_engine/cameras.py and embodiment.py
 GEMINI_336_SIZE: tuple[int, int] = (640, 360)
-SIDE_CAMERA_FOVY: float = 55.0
-WRIST_CAMERA_FOVY: float = 55.0
+SIDE_CAMERA_FOVY: float = _cell.SIDE_FOVY
+WRIST_CAMERA_FOVY: float = _cell.WRIST_FOVY
 SIDE_CAMERA_POSES: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
     "left": ((0.68, 0.66, 0.66), (0.73, -0.04, 0.03)),
     "right": ((1.02, -0.62, 0.65), (0.73, -0.04, 0.03)),
@@ -282,8 +284,8 @@ def make_side_camera(name: str, width: int = GEMINI_336_SIZE[0], height: int = G
     """Construct nominal pinhole `Camera` for `'left'` or `'right'` from `cameras.py`."""
     from .vision import Camera
 
-    eye, target = SIDE_CAMERA_POSES[name]
-    return Camera(name, np.asarray(eye, dtype=np.float64), look_at_matrix(eye, target), SIDE_CAMERA_FOVY, width, height)
+    pos, mat = _cell.side_camera_pose(name)
+    return Camera(name, pos, mat, SIDE_CAMERA_FOVY, width, height)
 
 
 def make_wrist_camera(
@@ -614,11 +616,11 @@ def reconstruct_fixture(
     nom_fx, nom_fy = float(NOMINAL_FIXTURE_XY[0]), float(NOMINAL_FIXTURE_XY[1])
 
     if not fixture_dets:
-        seats, seat_meta = _seats_from_fixture_pose(nom_fx, nom_fy, 0.0)
+        seats, seat_meta = _seats_from_fixture_pose(nom_fx, nom_fy, NOMINAL_FIXTURE_YAW)
         return {
             "detected": False,
             "fixture_position": [nom_fx, nom_fy, 0.0],
-            "fixture_yaw": 0.0,
+            "fixture_yaw": NOMINAL_FIXTURE_YAW,
             "fixture_confidence": 0.0,
             "seats": seats,
             "seat_meta": seat_meta,
@@ -661,7 +663,7 @@ def reconstruct_fixture(
             pt_3d = bcam.intersect_z(bu, bv, top_z_seat)
             w_total *= 0.65
 
-        if pt_3d is not None and 0.30 <= float(pt_3d[0]) <= 1.15 and -0.45 <= float(pt_3d[1]) <= 0.50:
+        if pt_3d is not None and 0.30 <= float(pt_3d[0]) <= 1.15 and -0.45 + _cell.LAYOUT_SHIFT[1] <= float(pt_3d[1]) <= 0.50:
             observed_seats[seat_id] = pt_3d
             observed_weights[seat_id] = max(0.05, w_total)
 
@@ -688,10 +690,10 @@ def reconstruct_fixture(
             keep = res < max(0.024, 1.8 * float(np.median(res)))
             if int(np.sum(keep)) >= 2:
                 fx, fy, fyaw, res = _fit_rigid_2d(L[keep], W[keep], wt[keep])
-        if math.hypot(fx - nom_fx, fy - nom_fy) > 0.16 or abs(fyaw) > math.radians(42.0):
-            fx, fy, fyaw = nom_fx, nom_fy, 0.0
+        if math.hypot(fx - nom_fx, fy - nom_fy) > 0.16 or _cell.yaw_off_nominal(fyaw) > math.radians(42.0):
+            fx, fy, fyaw = nom_fx, nom_fy, NOMINAL_FIXTURE_YAW
     else:
-        fx, fy, fyaw = nom_fx, nom_fy, 0.0
+        fx, fy, fyaw = nom_fx, nom_fy, NOMINAL_FIXTURE_YAW
 
     seats, seat_meta = _seats_from_fixture_pose(fx, fy, fyaw)
     # Apply any custom seat local_xy from fixture_seat_spec not already identical to SEAT_LOCAL_GEOM
@@ -810,10 +812,13 @@ def _reconstruct_bolt_single_view(
         if z_base < 0.002 and k1_st is not None:
             k1_ln = cam.intersect_z(u1, v1, 0.005)
             if k1_ln is not None:
-                lx1, ly1 = _fixture_local_xy(k1_ln[:2], fx, fy, fyaw)
-                if -0.04 <= lx1 <= 0.14 and -0.21 <= ly1 <= -0.105:
-                    c_f, s_f = math.cos(fyaw), math.sin(fyaw)
-                    wall_pt = np.array([fx - s_f * FIXTURE_BLOCK_Y_MIN, fy + c_f * FIXTURE_BLOCK_Y_MIN], dtype=np.float64)
+                # Lean face = the block face toward world -y: the fixture's +x face in the real cell. In the
+                # frame turned by reach_yaw it is the "-y" face at depth 0.125 m, spanning +-0.115 m.
+                fyaw_v = _cell.reach_yaw(fyaw)
+                lx1, ly1 = _fixture_local_xy(k1_ln[:2], fx, fy, fyaw_v)
+                if -0.13 <= lx1 <= 0.13 and -0.22 <= ly1 <= -0.115:
+                    c_f, s_f = math.cos(fyaw_v), math.sin(fyaw_v)
+                    wall_pt = np.array([fx + s_f * 0.125, fy - c_f * 0.125], dtype=np.float64)
                     wall_n = np.array([-s_f, c_f], dtype=np.float64)
                     o2, d2 = cam.unproject_ray(u2, v2)
                     k2_ln = intersect_vertical_plane(o2, d2, wall_pt, wall_n)
@@ -1009,7 +1014,7 @@ def reconstruct_parts(
                         continue
                     if float(np.dot(pt3 - ol, rl)) <= 0.08 or float(np.dot(pt3 - or_, rr)) <= 0.08:
                         continue
-                    if not (0.25 <= float(pt3[0]) <= 1.22 and -0.55 <= float(pt3[1]) <= 0.55 and -0.05 <= float(pt3[2]) <= 0.35):
+                    if not (0.25 <= float(pt3[0]) <= 1.22 and -0.55 + _cell.LAYOUT_SHIFT[1] <= float(pt3[1]) <= 0.55 and -0.05 <= float(pt3[2]) <= 0.35):
                         continue
                     cand_pairs.append((epi, il, ir, pt3))
             cand_pairs.sort(key=lambda t: t[0])
@@ -1053,7 +1058,7 @@ def reconstruct_parts(
                         os_, rs = cs.unproject_ray(us, vs)
                         pt_sw, epi_sw = triangulate_rays([os_, ow], [rs, rw], [1.0, 2.5])
                         if epi_sw <= 0.045 and float(np.dot(pt_sw - ow, rw)) > 0.05 and float(np.dot(pt_sw - os_, rs)) > 0.08:
-                            if 0.25 <= float(pt_sw[0]) <= 1.22 and -0.55 <= float(pt_sw[1]) <= 0.55 and -0.05 <= float(pt_sw[2]) <= 0.35:
+                            if 0.25 <= float(pt_sw[0]) <= 1.22 and -0.55 + _cell.LAYOUT_SHIFT[1] <= float(pt_sw[1]) <= 0.55 and -0.05 <= float(pt_sw[2]) <= 0.35:
                                 if best_side is None or epi_sw < best_side[0]:
                                     best_side = (epi_sw, sname, idx_s, pt_sw)
                 if best_side is not None:
@@ -1165,7 +1170,7 @@ def reconstruct_parts(
             axis_t2h, yaw, pose_hint = _estimate_nut_pose_and_yaw(cls_name, pos, cmap, cams, imgs_rgb, fyaw)
             axis_h2t = axis_t2h
 
-        if not (0.25 <= float(pos[0]) <= 1.20 and -0.52 <= float(pos[1]) <= 0.50 and -0.04 <= float(pos[2]) <= 0.30):
+        if not (0.25 <= float(pos[0]) <= 1.20 and -0.52 + _cell.LAYOUT_SHIFT[1] <= float(pos[1]) <= 0.50 and -0.04 <= float(pos[2]) <= 0.30):
             continue
 
         # Pool foreground pixels across views in this cluster for material/colour classification

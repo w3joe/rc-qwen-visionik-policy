@@ -17,10 +17,12 @@ from typing import Any, Callable
 
 import numpy as np
 
+from .cell import FIXTURE_NOMINAL_XY, FIXTURE_NOMINAL_YAW, LAYOUT_SHIFT
 from .kinematics import wrap_angle
 
 # Public fixture v3 rev-3 geometry (from assets/fixture/fixture_v3.json & fixture.py, converted to metres)
-NOMINAL_FIXTURE_XY = np.array([0.66, 0.15], dtype=np.float64)
+NOMINAL_FIXTURE_XY = np.array(FIXTURE_NOMINAL_XY, dtype=np.float64)  # real cell (was 0.66, 0.15)
+NOMINAL_FIXTURE_YAW = float(FIXTURE_NOMINAL_YAW)  # -90 deg: tray toward +y
 FIXTURE_HALF_FOOTPRINT = (0.125, 0.115)
 FIXTURE_BLOCK_TOP_Z = 0.115
 FIXTURE_BLOCK_Y_MIN = -0.115
@@ -325,13 +327,13 @@ def normalize_scene(raw: Any) -> SceneEstimate:
     if not isinstance(raw, dict):
         raw = {}
 
-    fixture_yaw = raw.get("fixture_yaw", 0.0)
+    fixture_yaw = raw.get("fixture_yaw", NOMINAL_FIXTURE_YAW)
     try:
         fixture_yaw = float(fixture_yaw)
         if not math.isfinite(fixture_yaw):
-            fixture_yaw = 0.0
+            fixture_yaw = NOMINAL_FIXTURE_YAW
     except (TypeError, ValueError):
-        fixture_yaw = 0.0
+        fixture_yaw = NOMINAL_FIXTURE_YAW
     fixture_yaw = wrap_angle(fixture_yaw)
 
     raw_seats = raw.get("seats") if isinstance(raw.get("seats"), dict) else {}
@@ -638,7 +640,7 @@ def is_part_in_seat(part: PartEstimate, seat_id: str, scene: SceneEstimate) -> b
 def _in_reachable_table(pos: np.ndarray) -> bool:
     x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
     r = math.hypot(x, y)
-    return 0.30 <= x <= 1.15 and -0.50 <= y <= 0.45 and -0.04 <= z <= 0.25 and r <= 1.08
+    return 0.30 <= x <= 1.15 and -0.50 + LAYOUT_SHIFT[1] <= y <= 0.45 and -0.04 <= z <= 0.25 and r <= 1.08
 
 
 def select_target_part(
@@ -724,7 +726,7 @@ def select_target_part(
     if len(candidates) == 1:
         return candidates[0]
 
-    tray_xy = scene.seats.get("tray", np.array([0.5865, 0.15, 0.004]))[:2]
+    tray_xy = scene.seats.get("tray", np.array([NOMINAL_FIXTURE_XY[0], NOMINAL_FIXTURE_XY[1] + 0.0735, 0.004]))[:2]
 
     def score_candidate(p: PartEstimate) -> float:
         s = 2.0 * p.confidence
