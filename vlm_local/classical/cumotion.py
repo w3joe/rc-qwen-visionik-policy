@@ -1481,8 +1481,9 @@ class CuMotionPlanner:
                     if not rep_end.collision_free:
                         continue
                     z_extra_pen = 6.0 * max(0.0, float(plan["s_end"][2]) - (support_top_z + 0.0216))
-                    # Mild preference against reaching past the far side of the block back toward base
-                    wrap_pen = 0.25 * abs(math.radians(deg))
+                    # Preferfyaw (deg=0, perpendicular to block front face over low tray) whenever unobstructed,
+                    # rotating away smoothly when an obstacle, fixture yaw, or reach limit requires it.
+                    wrap_pen = 1.5 * abs(math.radians(deg))
                     pre_sc = (
                         30.0 * min(rep_end.spring_link_clearance, 0.020)
                         + 20.0 * min(rep_end.min_clearance, 0.020)
@@ -1568,7 +1569,7 @@ class CuMotionPlanner:
                     continue
 
                 z_extra_pen = 6.0 * max(0.0, float(s_end[2]) - (support_top_z + 0.0216))
-                wrap_pen = 0.25 * abs(math.radians(deg))
+                wrap_pen = 1.5 * abs(math.radians(deg))
                 sc = (
                     32.0 * min(min_ring_spring, 0.020)
                     + 22.0 * min(min_ring_clear, 0.020)

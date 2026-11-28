@@ -199,9 +199,8 @@ class PlacementFinisher:
             top_z = float(sg["top_z"])
             w_th = max(0.0, float(getattr(held, "support_thickness", 0.0)))
             support_top_z = top_z + w_th
-            pad_tip = bolt_pad_tip(held.model)
-            z_s_held = float(np.clip(held.ee_at_grasp[2] - held.axis_height, pad_tip - 0.026, pad_tip - 0.003))
-            held_spec = make_held_bolt_spec(held.model, d_along=held.d_along, z_s_held=z_s_held, head_along_neg_x=True)
+            z_s_held = float(held.ee_at_grasp[2] - held.axis_height)
+            held_spec = make_held_bolt_spec(held.model, d_along=held.d_along, z_s_held=float(np.clip(z_s_held, 0.110, 0.140)), head_along_neg_x=True)
             c._held_spec = held_spec
             c._sync_cumotion(exclude_xy=seat_xyz[:2])
             best, diag = c.cumotion.select_bolt_insertion_plan(
@@ -247,8 +246,6 @@ class PlacementFinisher:
         support_top_z = top_z + w_th
         pad_tip = bolt_pad_tip(held.model)
         z_s_held = float(held.ee_at_grasp[2] - held.axis_height)
-        if getattr(self.c, "cumotion", None) is not None:
-            z_s_held = float(np.clip(z_s_held, pad_tip - 0.026, pad_tip - 0.003))
         p_s_b = np.array([held.d_along, 0.0, z_s_held])
         a = reach_yaw(fyaw) if approach_yaw is None else approach_yaw
         approach_xy = np.array([math.cos(a), math.sin(a), 0.0])  # gripper approach (+z_site), horizontal
@@ -376,10 +373,7 @@ class PlacementFinisher:
         exp_c = None
         if p["kind"] == "bolt":
             g = bolt_geom(held.model)
-            pad_tip = bolt_pad_tip(held.model)
             z_s_held = float(held.ee_at_grasp[2] - held.axis_height)
-            if getattr(c, "cumotion", None) is not None:
-                z_s_held = float(np.clip(z_s_held, pad_tip - 0.026, pad_tip - 0.003))
             off = p["rot"] @ np.array([held.d_along, 0.0, z_s_held])
             exp_c = p["s_pre"] + off
         else:

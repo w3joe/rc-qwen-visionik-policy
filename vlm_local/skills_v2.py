@@ -550,24 +550,37 @@ class PlacementV2Mixin:
         if wcam is not None and dets:
             full_len = g["length"] + g["head_height"]
             cands = []
-            standing_seen = False
-            px_thresh = 30.0 if g["diameter"] <= 0.017 else 42.0
+            detected_pose: str | None = None
+            # Compute distance to wrist-calibrated fixture if available (else scene fixture)
+            fix_dist = self.scene.fixture_distance(part.position[:2]) if self.scene is not None else 1.0
+            wfix = getattr(self, "_wrist_fixture", None)
+            if wfix is not None and "bore_m16" in wfix[0]:
+                wf_yaw = float(wfix[1])
+                lx16, ly16 = SEAT_LOCAL_GEOM["bore_m16"]["local_xy"]
+                cw, sw = math.cos(wf_yaw), math.sin(wf_yaw)
+                b16 = np.asarray(wfix[0]["bore_m16"], dtype=np.float64)
+                fxy = np.array([b16[0] - (cw * lx16 - sw * ly16), b16[1] - (sw * lx16 + cw * ly16)])
+                dx, dy = float(part.position[0] - fxy[0]), float(part.position[1] - fxy[1])
+                loc_x, loc_y = cw * dx + sw * dy, -sw * dx + cw * dy
+                fix_dist = float(math.hypot(max(abs(loc_x) - 0.125, 0.0), max(abs(loc_y) - 0.115, 0.0)))
+
             for d in dets:
                 if d.kind != "bolt" or not (d.usable_kpt(1, wcam.width, wcam.height, 0.30) and d.usable_kpt(2, wcam.width, wcam.height, 0.30)):
                     continue
-                px_span = float(np.linalg.norm(d.kpts_xy[1, :2] - d.kpts_xy[2, :2]))
-                p_mid_st = wcam.intersect_z(float(d.kpts_xy[0, 0]), float(d.kpts_xy[0, 1]), 0.5 * full_len)
-                if getattr(self, "cumotion", None) is not None and px_span < px_thresh and p_mid_st is not None:
-                    if float(np.linalg.norm(p_mid_st[:2] - part.position[:2])) < 0.07:
-                        standing_seen = True
                 pk1 = wcam.intersect_z(float(d.kpts_xy[1, 0]), float(d.kpts_xy[1, 1]), 0.5 * g["across_flats"])
                 pk2 = wcam.intersect_z(float(d.kpts_xy[2, 0]), float(d.kpts_xy[2, 1]), 0.5 * g["diameter"])
                 if pk1 is None or pk2 is None:
                     continue
                 mid = 0.5 * (pk1 + pk2)
                 dist = float(np.linalg.norm(mid[:2] - part.position[:2]))
+                horiz_len = float(np.linalg.norm(pk1[:2] - pk2[:2]))
                 len_err = abs(float(np.linalg.norm(pk1 - pk2)) - full_len)
-                if dist < 0.085 and len_err < 0.030:
+                if getattr(self, "cumotion", None) is not None and dist < 0.075:
+                    if horiz_len < 0.38 * full_len:
+                        detected_pose = "standing"
+                    elif horiz_len < 0.78 * full_len and fix_dist < 0.068 and detected_pose is None:
+                        detected_pose = "leaning"
+                if dist < 0.085 and len_err < 0.026:
                     cands.append((0 if d.class_name == model else 1, dist, mid, pk1 - pk2))
             if cands:
                 cands.sort(key=lambda t: (t[0], t[1]))
@@ -576,9 +589,10 @@ class PlacementV2Mixin:
                 if float(np.linalg.norm(vec_xy)) > 1e-4:
                     bpos = mid
                     bax = vec_xy / float(np.linalg.norm(vec_xy))
-            elif standing_seen:
-                self._last_grasp_meta = {"detected_standing": True, "part": part, "model": model}
-                self._log_ev("wrist_detected_standing_bolt", model=model, xy=[round(float(part.position[0]), 4), round(float(part.position[1]), 4)])
+            elif detected_pose is not None:
+                self._last_grasp_meta = {"detected_pose": detected_pose, "part": part, "model": model}
+                self._log_ev("wrist_detected_upright_bolt", model=model, pose=detected_pose,
+                             xy=[round(float(part.position[0]), 4), round(float(part.position[1]), 4)])
                 return
 
         d_along = bolt_grasp_d_along(model)
@@ -709,8 +723,9 @@ class PlacementV2Mixin:
             model = _bolt_model(goal, part)
             if on_washer or use_cumo or bolt_geom(model)["diameter"] > 0.020:
                 yield from self._grasp_lying_bolt_wrist_refined(goal, part, model, attempt=attempt)
-                if getattr(self, "_last_grasp_meta", {}).get("detected_standing"):
-                    part.pose_hint = "standing"
+                det_pose = getattr(self, "_last_grasp_meta", {}).get("detected_pose")
+                if det_pose:
+                    part.pose_hint = str(det_pose)
                     yield from self._unlean_bolt(part, fyaw, goal=goal)
                     self.tracker.reset_part()
                     yield from self._observe_target(goal, grip=0.55, min_samples=1, max_wait=4)
@@ -719,7 +734,7 @@ class PlacementV2Mixin:
                         continue
                     model = _bolt_model(goal, part)
                     yield from self._grasp_lying_bolt_wrist_refined(goal, part, model, attempt=attempt)
-                    if getattr(self, "_last_grasp_meta", {}).get("detected_standing"):
+                    if getattr(self, "_last_grasp_meta", {}).get("detected_pose"):
                         continue
             else:
                 yield from self._hover_and_descend_with_nudge_watch(
@@ -727,8 +742,7 @@ class PlacementV2Mixin:
             meta = self._last_grasp_meta
             yield from self._grip_hold(0.0, steps=14, early_stop=True)
             if use_cumo:
-                meta["grasp_ee_pos"] = self.proprio["ee_pos"].copy()
-                z_sh = float(np.clip(meta["grasp_ee_pos"][2] - bolt_axis_height_when_lying(model), 0.110, 0.136))
+                z_sh = float(np.clip(meta["grasp_ee_pos"][2] - bolt_axis_height_when_lying(model), 0.110, 0.140))
                 self._held_spec = make_held_bolt_spec(model, d_along=float(meta["d_along"]), z_s_held=z_sh, head_along_neg_x=True)
             cur_p, cur_r = fk_pose(self.q_target)
             yield from self._move_cartesian(np.array([cur_p[0], cur_p[1], 0.295 if (on_washer or use_cumo) else 0.28]), cur_r, 0.0, pos_speed=0.024, settle=2)
