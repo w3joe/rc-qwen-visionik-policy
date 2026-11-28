@@ -617,6 +617,11 @@ class PlacementV2Mixin:
                 part = self.tracker.filtered_part()
                 if part is None:
                     continue
+            wfix = getattr(self, "_wrist_fixture", None)
+            if (not on_washer and not self.finisher_results) and (wfix is None or goal.seat_id not in wfix[0]):
+                seats0, _, _ = self._get_filtered_fixture()
+                yield from self._ensure_safe_height(0.28, 0.60)
+                yield from self._refine_fixture_seat_from_wrist(goal.seat_id, np.asarray(seats0[goal.seat_id], float)[:2], down_mat(0.0))
             model = _bolt_model(goal, part)
             if on_washer or bolt_geom(model)["diameter"] > 0.020:
                 yield from self._grasp_lying_bolt_wrist_refined(goal, part, model, attempt=attempt)

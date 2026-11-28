@@ -428,14 +428,16 @@ class PlacementFinisher:
                 if stalled:
                     break
             if not stalled:
-                for settle_i in range(8):
+                n_settle = 8 if p["kind"] == "nut" else 12
+                settle_tol = 0.008 if p["kind"] == "nut" else 0.0035
+                for settle_i in range(n_settle):
                     if p["kind"] == "nut" and settle_i >= 4:
                         cmd_p, _ = fk_pose(c.q_target)
                         if float(c.proprio["ee_pos"][2] - cmd_p[2]) > p["stall_lag"]:
                             stalled = True
                             break
                     yield c._emit_toward(q_prev, 0.0, max_step=0.020 if p["kind"] == "nut" else 0.025, want_vision=False)
-                    if float(np.max(np.abs(c.proprio["joint_pos"] - q_prev))) < 0.008 and \
+                    if float(np.max(np.abs(c.proprio["joint_pos"] - q_prev))) < settle_tol and \
                             float(np.max(np.abs(c.proprio["joint_vel"]))) < 0.04:
                         break
             cur_depth_err = float(c.proprio["ee_pos"][2] - p_end[2])
