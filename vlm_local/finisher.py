@@ -435,7 +435,7 @@ class PlacementFinisher:
                             stalled = True
                             break
                     yield c._emit_toward(q_prev, 0.0, max_step=0.020 if p["kind"] == "nut" else 0.025, want_vision=False)
-                    if float(np.max(np.abs(c.proprio["joint_pos"] - q_prev))) < 0.006 and \
+                    if float(np.max(np.abs(c.proprio["joint_pos"] - q_prev))) < 0.008 and \
                             float(np.max(np.abs(c.proprio["joint_vel"]))) < 0.04:
                         break
             cur_depth_err = float(c.proprio["ee_pos"][2] - p_end[2])

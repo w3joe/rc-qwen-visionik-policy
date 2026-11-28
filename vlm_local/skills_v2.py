@@ -500,25 +500,18 @@ class PlacementV2Mixin:
         if wcam is not None and dets:
             full_len = g["length"] + g["head_height"]
             cands = []
-            center_cands = []
             for d in dets:
-                if d.kind != "bolt":
+                if d.kind != "bolt" or not (d.usable_kpt(1, wcam.width, wcam.height, 0.30) and d.usable_kpt(2, wcam.width, wcam.height, 0.30)):
                     continue
-                if d.usable_kpt(1, wcam.width, wcam.height, 0.30) and d.usable_kpt(2, wcam.width, wcam.height, 0.30):
-                    pk1 = wcam.intersect_z(float(d.kpts_xy[1, 0]), float(d.kpts_xy[1, 1]), 0.5 * g["across_flats"])
-                    pk2 = wcam.intersect_z(float(d.kpts_xy[2, 0]), float(d.kpts_xy[2, 1]), 0.5 * g["diameter"])
-                    if pk1 is not None and pk2 is not None:
-                        mid = 0.5 * (pk1 + pk2)
-                        dist = float(np.linalg.norm(mid[:2] - part.position[:2]))
-                        len_err = abs(float(np.linalg.norm(pk1 - pk2)) - full_len)
-                        if dist < 0.085 and len_err < 0.030:
-                            cands.append((0 if d.class_name == model else 1, dist, mid, pk1 - pk2))
-                if d.usable_kpt(0, wcam.width, wcam.height, 0.35):
-                    pk0 = wcam.intersect_z(float(d.kpts_xy[0, 0]), float(d.kpts_xy[0, 1]), g["lying_radius"])
-                    if pk0 is not None:
-                        dist0 = float(np.linalg.norm(pk0[:2] - part.position[:2]))
-                        if dist0 < 0.085:
-                            center_cands.append((0 if d.class_name == model else 1, dist0, pk0))
+                pk1 = wcam.intersect_z(float(d.kpts_xy[1, 0]), float(d.kpts_xy[1, 1]), 0.5 * g["across_flats"])
+                pk2 = wcam.intersect_z(float(d.kpts_xy[2, 0]), float(d.kpts_xy[2, 1]), 0.5 * g["diameter"])
+                if pk1 is None or pk2 is None:
+                    continue
+                mid = 0.5 * (pk1 + pk2)
+                dist = float(np.linalg.norm(mid[:2] - part.position[:2]))
+                len_err = abs(float(np.linalg.norm(pk1 - pk2)) - full_len)
+                if dist < 0.085 and len_err < 0.030:
+                    cands.append((0 if d.class_name == model else 1, dist, mid, pk1 - pk2))
             if cands:
                 cands.sort(key=lambda t: (t[0], t[1]))
                 _, _, mid, vec = cands[0]
@@ -526,9 +519,6 @@ class PlacementV2Mixin:
                 if float(np.linalg.norm(vec_xy)) > 1e-4:
                     bpos = mid
                     bax = vec_xy / float(np.linalg.norm(vec_xy))
-            elif center_cands:
-                center_cands.sort(key=lambda t: (t[0], t[1]))
-                bpos = center_cands[0][2]
 
         d_along = bolt_grasp_d_along(model)
         retry_offsets = (np.zeros(3), np.array([0.0, 0.0, -0.002]), np.array([0.003, 0.0, -0.002]), np.array([-0.003, 0.003, -0.002]))
@@ -627,13 +617,12 @@ class PlacementV2Mixin:
                 part = self.tracker.filtered_part()
                 if part is None:
                     continue
-            wfix = getattr(self, "_wrist_fixture", None)
-            if wfix is None or goal.seat_id not in wfix[0]:
-                seats0, _, _ = self._get_filtered_fixture()
-                yield from self._ensure_safe_height(0.28, 0.60)
-                yield from self._refine_fixture_seat_from_wrist(goal.seat_id, np.asarray(seats0[goal.seat_id], float)[:2], down_mat(0.0))
             model = _bolt_model(goal, part)
-            yield from self._grasp_lying_bolt_wrist_refined(goal, part, model, attempt=attempt)
+            if on_washer or bolt_geom(model)["diameter"] > 0.020:
+                yield from self._grasp_lying_bolt_wrist_refined(goal, part, model, attempt=attempt)
+            else:
+                yield from self._hover_and_descend_with_nudge_watch(
+                    goal, lambda p, s, fy, ry, m=model: self._compute_lying_bolt_grasp(p, s, fy, ry, m), attempt=attempt)
             meta = self._last_grasp_meta
             yield from self._grip_hold(0.0, steps=14, early_stop=True)
             cur_p, cur_r = fk_pose(self.q_target)
