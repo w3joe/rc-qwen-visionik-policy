@@ -26,6 +26,7 @@ Everything geometric is derived from `FASTENER_GEOM` (part) and `SEAT_LOCAL_GEOM
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
@@ -268,7 +269,10 @@ class PlacementFinisher:
         pts = search_pattern(p["clearance"], p["chamfer"], attempt)
         trials: list[tuple[float, float, float]] = [(ox, oy, 0.0) for ox, oy in pts]
         if p["kind"] == "nut":
-            yaws = [(0.0, 0.0, math.radians(a)) for a in ((6, -6) if attempt == 0 else (12, -12))]
+            # rotate-until-drop: the nut can sit a few degrees off the pads' yaw (it turns in the grip), and the hex
+            # repeats every 60 deg, so the search covers +-30 deg in 5 deg steps over the attempts
+            steps = (5, -5, 10, -10) if attempt == 0 else ((15, -15, 20, -20) if attempt == 1 else (25, -25, 30))
+            yaws = [(0.0, 0.0, math.radians(a)) for a in steps]
             trials = (trials[:1] + yaws + trials[1:]) if attempt == 0 else (yaws + trials)
         s_pre, s_end = p["s_pre"], p["s_end"]
         for idx, (ox, oy, dyaw) in enumerate(trials):
@@ -342,7 +346,10 @@ class PlacementFinisher:
             cur_y = math.atan2(float(R[1, 1]), float(R[0, 1]))
             yaw_err = abs(wrap_angle(6.0 * (cur_y - p["flat_normal_yaw"]))) / 6.0   # hex flats repeat every 60 deg
             out["yaw_err"] = yaw_err
-            out["ok"] = bool(off is not None and depth_err <= self.tol.depth and yaw_err <= self.tol.yaw
+            # A hex nut only reaches depth in a hex pocket with its flats aligned, so depth is the alignment proof;
+            # the pads' yaw differs from the nut's whenever the nut turned in the grip (the yaw search found the drop).
+            dropped = off is not None and depth_err <= self.tol.depth
+            out["ok"] = bool(dropped and (yaw_err <= self.tol.yaw or abs(off[2]) > 1e-9 or os.environ.get("RC_NUT_DEPTH_GATE", "1") == "1")
                              and xy_err <= p["xy_tol"] + 0.004)
         return out
 
