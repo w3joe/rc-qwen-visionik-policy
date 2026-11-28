@@ -105,7 +105,8 @@ def _min_grip_for_part(part_model: str) -> float:
     if "washer" in part_model:
         return 0.34
     if "nut" in part_model:
-        return 0.24
+        af = float(FASTENER_GEOM.get(part_model, FASTENER_GEOM["nut_m30"]).get("across_flats", 0.046))
+        return max(EMPTY_GRIPPER_THRESH + 0.02, min(0.38, 0.06 + 5.4 * af))
     if "m30" in part_model:
         return 0.19
     return EMPTY_GRIPPER_THRESH
@@ -963,14 +964,42 @@ class EpisodeController:
 
     # ------------------------------------------------------------------ Skill 3: M30 nut -> hex_m30
 
-    def _tip_edge_nut(self, part: PartEstimate) -> Iterator[StepCommand]:
-        """Tip an on-edge nut flat onto the table with a horizontal sweep across its top edge."""
+    def _tip_edge_nut(self, part: PartEstimate, model: str | None = None, yaw_offset: float = 0.0) -> Iterator[StepCommand]:
+        """Tip an on-edge nut flat onto the table with a size-parametric horizontal sweep across its upper face."""
+        nut_key = model or (part.raw_kind if part.raw_kind in FASTENER_GEOM else "nut_m30")
+        geom = FASTENER_GEOM.get(nut_key, FASTENER_GEOM["nut_m30"])
+        af = float(geom.get("across_flats", 0.046))
+        th = float(geom.get("thickness", 0.0256))
+
+        # Hover directly over the nut first so the wrist camera refines its exact XY and on-edge axis
+        yield from self._ensure_safe_height(0.24, 0.0)
+        p_look = np.array([float(part.position[0]), float(part.position[1]), 0.25], dtype=np.float64)
+        q_look = self.ik.solve(p_look, down_mat(0.0), self.q_target).q
+        yield from self._move_joint(q_look, 0.0, settle=2, want_vision=False)
+        yield self._emit_hold(0.0, want_vision=True)
+        if self.scene is not None:
+            near_same = [
+                p for p in self.scene.parts
+                if p.kind == "nut" and p.confidence >= 0.30
+                and float(np.linalg.norm(p.position[:2] - part.position[:2])) < 0.08
+                and (p.raw_kind == nut_key or nut_key not in FASTENER_GEOM)
+            ]
+            if near_same:
+                part = min(near_same, key=lambda p: float(np.linalg.norm(p.position[:2] - part.position[:2])))
+                if part.pose_hint != "on_edge":
+                    yield from self._grip_hold(0.72, steps=6, early_stop=True, want_vision=True)
+                    return
+
         pos = part.position
         n_ax = np.array([float(part.axis[0]), float(part.axis[1]), 0.0], dtype=np.float64)
         if float(np.linalg.norm(n_ax)) < 1e-4:
-            n_ax = np.array([math.cos(part.yaw), math.sin(part.yaw), 0.0], dtype=np.float64)
+            ang = part.yaw + yaw_offset
+            n_ax = np.array([math.cos(ang), math.sin(ang), 0.0], dtype=np.float64)
         else:
             n_ax = normalize(n_ax)
+            if abs(yaw_offset) > 1e-6:
+                c_o, s_o = math.cos(yaw_offset), math.sin(yaw_offset)
+                n_ax = np.array([c_o * n_ax[0] - s_o * n_ax[1], s_o * n_ax[0] + c_o * n_ax[1], 0.0], dtype=np.float64)
 
         # Pick push direction along +-n_ax staying on table and clear of fixture/other parts
         others = []
@@ -997,12 +1026,13 @@ class EpisodeController:
                 best_dir = d
 
         rot_push = site_rot_from_zx(np.array([0.0, 0.0, -1.0]), best_dir)
-        z_site = 0.036 + PAD_TIP_CLOSED
-        p_start = np.array([pos[0] - 0.048 * best_dir[0], pos[1] - 0.048 * best_dir[1], z_site], dtype=np.float64)
-        p_end = np.array([pos[0] + 0.038 * best_dir[0], pos[1] + 0.038 * best_dir[1], z_site], dtype=np.float64)
+        z_site = max(0.014, 0.68 * af) + PAD_TIP_CLOSED
+        d_start = max(0.052, 0.5 * th + 0.038)
+        d_end = max(0.042, 0.85 * af)
+        p_start = np.array([pos[0] - d_start * best_dir[0], pos[1] - d_start * best_dir[1], z_site], dtype=np.float64)
+        p_end = np.array([pos[0] + d_end * best_dir[0], pos[1] + d_end * best_dir[1], z_site], dtype=np.float64)
         p_hover = np.array([p_start[0], p_start[1], 0.25], dtype=np.float64)
 
-        yield from self._ensure_safe_height(0.24, 0.0)
         q_hover = self.ik.solve(p_hover, rot_push, self.q_target).q
         yield from self._move_joint(q_hover, 0.0, settle=2)
         yield from self._move_cartesian(p_start, rot_push, 0.0, pos_speed=0.020, settle=2)

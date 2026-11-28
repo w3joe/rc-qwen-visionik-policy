@@ -50,6 +50,12 @@ PAD_TIP_NUT_EDGE = 0.1372
 PAD_TIP_WASHER = 0.1329
 PAD_HALF_WIDTH_X = 0.0135
 
+
+def pad_tip_for_gap(gap_m: float) -> float:
+    """Robotiq 2F-140 fingertip reach (m) along gripperframe +Z for inner finger gap `gap_m` (m)."""
+    g = float(np.clip(gap_m, 0.0, 0.140))
+    return 0.1381 - 0.012 * g - 1.10 * g * g
+
 # Team bracket + Gemini 336 camera housing in tool0 frame (embodiment.py)
 GRIPPER_SPACER_M = 0.0244
 BASE_MOUNT_Z_M = 0.007
