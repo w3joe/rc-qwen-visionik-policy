@@ -11,6 +11,7 @@ Pure public-observation controller:
 from __future__ import annotations
 
 import math
+import os
 from typing import Any, Iterator
 
 import numpy as np
@@ -517,7 +518,8 @@ class EpisodeController:
             grasp_yaw = nearest_pi_yaw(fyaw, ref_yaw)
             # a flat washer's centre sits at half its thickness; camera depth from the low views reads it high
             z_c = min(float(pos[2]), 0.5 * geom["thickness"] + 0.002)
-            z_tip = max(z_c - 0.5 * geom["thickness"], 0.0) + PAD_TIP_WASHER + 0.0015
+            # pads at table level (they stop on it): a 5 mm PLA washer is pinched only by its lower rim
+            z_tip = max(z_c - 0.5 * geom["thickness"], 0.0) + PAD_TIP_WASHER - float(os.environ.get("RC_WASHER_DZ", "0.0025"))
             grasp_pos = np.array([float(pos[0]), float(pos[1]), z_tip], dtype=np.float64)
             return grasp_pos, down_mat(grasp_yaw), 0.82, 0.24, {"mode": "washer", "grasp_yaw": grasp_yaw}
 
