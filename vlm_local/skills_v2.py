@@ -135,6 +135,9 @@ class PlacementV2Mixin:
         if not self.placement_v2:
             yield from super()._execute_nut_pocket_goal(goal)
             return
+        if any("bore_" in str(gid) for gid, _ in getattr(self, "finisher_results", ())):
+            # Clear arm-occluded fixture estimates accumulated while the gripper hovered horizontally over a bore
+            self.tracker.reset_all()
         placements = 0
         for attempt in range(4):
             self.tracker.reset_part()
