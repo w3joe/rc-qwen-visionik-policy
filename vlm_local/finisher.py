@@ -132,7 +132,7 @@ class PlacementFinisher:
         seats, fyaw, _ = c._get_filtered_fixture()
         seat_xyz = np.asarray(seats[seat_id], float)
         if held.kind == "bolt":
-            plan = self._bolt_plan(held, seat_id, sg, seat_xyz, fyaw)
+            plan = self._best_bolt_plan(held, seat_id, sg, seat_xyz, fyaw)
         else:
             plan = self._nut_plan(held, seat_id, sg, seat_xyz, fyaw)
         plan["seat_id"] = seat_id
@@ -159,12 +159,39 @@ class PlacementFinisher:
         return FinishResult(ok=ok, reason=("aligned_release; " if released_ok else "forced_release; ") + why, stages=stages)
 
     # ---------------------------------------------------------------- plans (all poses derived from geometry)
-    def _bolt_plan(self, held: HeldPart, seat_id: str, sg: dict, seat_xyz: np.ndarray, fyaw: float) -> dict[str, Any]:
+    def _best_bolt_plan(self, held: HeldPart, seat_id: str, sg: dict, seat_xyz: np.ndarray, fyaw: float) -> dict[str, Any]:
+        """The bolt is inserted with the gripper horizontal; which horizontal heading reaches the hole depends on where the
+        hole is (in the real cell the base stands 18.7 cm above the table, so 'pointing away from the base' can put the
+        wrist below the base plane). Try the four headings and keep the first whose transit / pre-insert / insert poses
+        all solve exactly and clear the table."""
+        c = self.c
+        base = reach_yaw(fyaw)
+        best, best_cost, tried = None, float("inf"), []
+        for k in (0, 2, 1, 3):
+            yaw = base + k * math.pi / 2.0
+            plan = self._bolt_plan(held, seat_id, sg, seat_xyz, fyaw, approach_yaw=yaw)
+            q = c.q_target.copy()
+            cost = 0.0
+            for key in ("s_transit", "s_pre", "s_end"):
+                sol = c.ik.solve(plan[key], plan["rot"], q, wrist_up=True)
+                q = sol.q
+                cost += 100.0 * float(sol.pos_err) + 10.0 * float(sol.rot_err) + float(sol.clearance_pen)
+            tried.append((k, round(cost, 3)))
+            if cost < best_cost:
+                best, best_cost = plan, cost
+            if cost < 0.15:            # < ~1 mm and < ~0.5 deg on every pose, no clearance penalty
+                break
+        c._log("bolt_heading", tried=tried, chosen=round(math.degrees(math.atan2(best["rot"][1, 2], best["rot"][0, 2])), 1))
+        return best
+
+    def _bolt_plan(self, held: HeldPart, seat_id: str, sg: dict, seat_xyz: np.ndarray, fyaw: float,
+                   approach_yaw: float | None = None) -> dict[str, Any]:
         g = bolt_geom(held.model)
         top_z = float(sg["top_z"])
         z_s_held = float(held.ee_at_grasp[2] - held.axis_height)
         p_s_b = np.array([held.d_along, 0.0, z_s_held])
-        approach_xy = np.array([math.cos(reach_yaw(fyaw)), math.sin(reach_yaw(fyaw)), 0.0])  # away from the base
+        a = reach_yaw(fyaw) if approach_yaw is None else approach_yaw
+        approach_xy = np.array([math.cos(a), math.sin(a), 0.0])  # gripper approach (+z_site), horizontal
         rot = site_rot_from_zx(approach_xy, np.array([0.0, 0.0, -1.0]))
         off = rot @ p_s_b
         pad_tip = bolt_pad_tip(held.model)
