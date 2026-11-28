@@ -272,7 +272,7 @@ class PlacementFinisher:
             seats_med, f_yaw_med, _ = c._get_filtered_fixture()
             sid = p.get("seat_id")
             w_anchors = int(((sc.raw if sc is not None else None) or {}).get("selfcal", {}).get("anchors", 0))
-            if sc is not None and sid in sc.seats and w_anchors >= 2:
+            if sc is not None and sid in sc.seats and w_anchors >= 3:
                 f_xyz, f_yaw = np.asarray(sc.seats[sid], float), float(sc.fixture_yaw)
             elif sid in seats_med:
                 f_xyz, f_yaw = np.asarray(seats_med[sid], float), float(f_yaw_med)

@@ -1619,6 +1619,7 @@ def estimate_scene_from_detector(obs: dict[str, Any]) -> dict[str, Any] | None:
         "fixture_position": list(det_out["fixture_position"]),
         "fixture_confidence": fix_conf,
         "seat_meta": det_out["seat_meta"],
+        "selfcal": det_out.get("selfcal") or {},
         "camera_calibration": {},
         "cameras": {k: c for k, c in cams.items() if k in ("left", "right")},
         "perception_source": "detector",
