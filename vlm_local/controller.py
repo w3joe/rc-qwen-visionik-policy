@@ -184,7 +184,7 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
             dxy = self._dest_xy(goal, seats)
             surf = self._surface_z(goal, seats)
             cur_yaw = self._cur_ee_yaw()
-            place_yaw = nearest_pi_yaw(fyaw + math.pi / 2.0, cur_yaw) if (goal.part_kind == "bolt" and mode == "lying") else cur_yaw
+            place_yaw = nearest_pi_yaw(fyaw + math.pi / 2.0, cur_yaw) if (goal.part_kind == "bolt" and mode in ("lying", "leaning")) else cur_yaw
             rot = down_mat(place_yaw)
             yield from self._move_cartesian(np.array([dxy[0], dxy[1], lift_z]), rot, 0.0, pos_speed=0.028, rot_speed=0.18, settle=2)
             if self.proprio["gripper"] < min_grip:

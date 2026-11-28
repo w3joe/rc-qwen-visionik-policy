@@ -36,7 +36,12 @@ from .classical.kinematics import (PAD_HALF_WIDTH_X, PAD_TIP_BOLT_M16, PAD_TIP_B
                                    PAD_TIP_CLOSED, PAD_TIP_NUT_FLAT, closest_hex_yaw, fk_pose, pad_tip_for_gap,
                                    site_rot_from_zx, site_rot_from_zy, slerp_rot, wrap_angle)
 from .classical.cell import LAYOUT_SHIFT, reach_yaw
+from .classical.planner import EMPTY_GRIPPER_THRESH
 from .classical.scene_interface import FASTENER_GEOM, SEAT_LOCAL_GEOM, PartEstimate, is_part_in_seat
+
+# Robotiq 2F-140 spring_link collision mesh extends 19.55 mm along +x_site (vs 13.5 mm pad half-width);
+# horizontal bolt insertion over the 115 mm fixture block must clear the spring links (human demos keep >= 35 mm).
+SPRING_LINK_HALF_X = 0.0196
 
 StepCommand = tuple  # (dq_6, gripper_01, want_vision_next_step)
 
@@ -149,7 +154,7 @@ class PlacementFinisher:
         sg = SEAT_LOCAL_GEOM[seat_id]
         seats, fyaw, _ = c._get_filtered_fixture()
         wfix = getattr(c, "_wrist_fixture", None)
-        if wfix is not None and seat_id in wfix[0]:
+        if held.kind == "bolt" and wfix is not None and seat_id in wfix[0]:
             seat_xyz = np.asarray(wfix[0][seat_id], float)
             fyaw = float(wfix[1])
         else:
@@ -222,8 +227,8 @@ class PlacementFinisher:
         rot = site_rot_from_zx(approach_xy, np.array([0.0, 0.0, -1.0]))
         off = rot @ p_s_b
         pad_tip = bolt_pad_tip(held.model)
-        pad_z_drop = abs(rot[2, 0]) * PAD_HALF_WIDTH_X + abs(rot[2, 1]) * 0.012 + max(0.0, -rot[2, 2]) * pad_tip
-        min_site_z = support_top_z + 0.002 + pad_z_drop
+        link_z_drop = abs(rot[2, 0]) * SPRING_LINK_HALF_X + abs(rot[2, 1]) * 0.012 + max(0.0, -rot[2, 2]) * pad_tip
+        min_site_z = support_top_z + 0.002 + link_z_drop
         b_pre = np.array([seat_xyz[0], seat_xyz[1], support_top_z + 0.025 - g["tip_x"]])
         s_pre = b_pre - off
         if w_th > 0.0:
@@ -241,7 +246,7 @@ class PlacementFinisher:
         return {
             "kind": "bolt", "rot": rot, "s_pre": s_pre, "s_end": s_ins, "wrist_up": True, "grip": 0.0,
             "s_transit": np.array([s_pre[0], s_pre[1], s_tr_z]), "g_release": 0.65,
-            "clearance": clearance, "chamfer": float(sg["chamfer"]), "stall_lag": 0.006, "stall_margin": 0.004,
+            "clearance": clearance, "chamfer": float(sg["chamfer"]), "stall_lag": 0.0042, "stall_margin": 0.002, "stall_steps": 3,
             "seat_xyz": seat_xyz, "fyaw": fyaw, "pad_tip": pad_tip,
             "on_washer": w_th > 0.0, "washer_play": w_play,
             "xy_tol": max(self.tol.xy_floor, 0.5 * clearance + 0.001),
@@ -381,10 +386,14 @@ class PlacementFinisher:
         depth_tol = float(p.get("nut_depth_tol", self.tol.nut_depth)) if p["kind"] == "nut" else self.tol.depth
         stall_req = int(p.get("stall_steps", 6))
         stall_ceil = float(p.get("stall_ceiling", 1.0))
-        desc_step = 0.016 if p["kind"] == "nut" else 0.030
+        desc_step = 0.016 if p["kind"] == "nut" else 0.020
         best_err_seen = float(p.get("best_depth_err", 1e9))
 
         for idx, (ox, oy, dyaw) in enumerate(trials):
+            if float(c.proprio["gripper"]) < EMPTY_GRIPPER_THRESH:
+                c._log("dropped_before_trial", idx=idx, grip=round(float(c.proprio["gripper"]), 3))
+                p["last_offset"] = None
+                return
             rot = self._rot_for(p, dyaw)
             p_start, p_end = s_pre + [ox, oy, 0.0], s_end + [ox, oy, 0.0]
             if idx > 0:
@@ -420,7 +429,7 @@ class PlacementFinisher:
                     break
             if not stalled:
                 for settle_i in range(8):
-                    if p["kind"] == "nut" and settle_i >= 4:
+                    if settle_i >= 4:
                         cmd_p, _ = fk_pose(c.q_target)
                         if float(c.proprio["ee_pos"][2] - cmd_p[2]) > p["stall_lag"]:
                             stalled = True
@@ -454,11 +463,13 @@ class PlacementFinisher:
         xy_err = float(np.linalg.norm(ee[:2] - (s_end[:2] + [ox, oy])))
         depth_err = float(ee[2] - s_end[2])
         out = {"xy_err": xy_err, "depth_err": depth_err, "search_offset": [round(ox, 4), round(oy, 4)]}
+        still_held = float(c.proprio["gripper"]) >= EMPTY_GRIPPER_THRESH
+        out["still_held"] = still_held
         if p["kind"] == "bolt":
             axis = -R[:, 0]                           # bolt +axis (toward the head) = -x_site
             tilt = float(math.acos(float(np.clip(axis[2], -1, 1))))
             out["tilt"] = tilt
-            out["ok"] = bool(off is not None and depth_err <= self.tol.depth and tilt <= self.tol.tilt
+            out["ok"] = bool(still_held and off is not None and depth_err <= self.tol.depth and tilt <= self.tol.tilt
                              and xy_err <= p["xy_tol"] + 0.004)
         else:
             cur_y = math.atan2(float(R[1, 1]), float(R[0, 1]))

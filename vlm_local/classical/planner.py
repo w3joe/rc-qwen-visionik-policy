@@ -86,10 +86,12 @@ def _extract_proprio(obs: dict[str, Any]) -> dict[str, Any]:
         if ee_pos.size == 3:
             ee_pos = ee_pos + BASE_WORLD  # observation is in the robot base frame
         ee_quat = np.asarray(ee_quat_raw, dtype=np.float64).reshape(-1)
-        if ee_pos.size == 3 and np.all(np.isfinite(ee_pos)) and ee_quat.size == 4 and np.all(np.isfinite(ee_quat)):
+        fk_p, fk_r = fk_pose(jp)
+        if (ee_pos.size == 3 and np.all(np.isfinite(ee_pos)) and ee_quat.size == 4 and np.all(np.isfinite(ee_quat))
+                and float(np.linalg.norm(ee_pos - fk_p)) <= 0.03):
             ee_rot = quat_to_mat(ee_quat)
         else:
-            ee_pos, ee_rot = fk_pose(jp)
+            ee_pos, ee_rot = fk_p, fk_r
     else:
         ee_pos, ee_rot = fk_pose(jp)
 
@@ -630,7 +632,7 @@ class EpisodeController:
             seats, fyaw, _ = self._get_filtered_fixture()
             tray_xyz = seats["tray"]
             cur_yaw = self._cur_ee_yaw()
-            if goal.part_kind == "bolt" and mode == "lying":
+            if goal.part_kind == "bolt" and mode in ("lying", "leaning"):
                 # Since gripper +x was aligned with bolt axis at grasp, aligning +x with tray long axis
                 # (fyaw + pi/2) puts the 78.7 mm bolt lengthwise inside the 222 mm tray!
                 place_yaw = nearest_pi_yaw(fyaw + math.pi / 2.0, cur_yaw)
