@@ -978,7 +978,7 @@ class EpisodeController:
         af = float(geom.get("across_flats", 0.046))
         th = float(geom.get("thickness", 0.0256))
 
-        grip_push = float(np.clip(0.11 + 4.2 * th, 0.18, 0.25))  # inner gap ~0.6*thickness: wide twin bar, narrower than nut thickness
+        grip_push = float(np.clip(0.03 + 8.0 * th, 0.19, 0.28))  # inner gap < nut thickness (M24->0.20, M30->0.235, M36->0.28)
         if axis_override is None:
             # Hover over the nut with parted fingers so the wrist camera refines its XY (and axis when still seen on_edge)
             yield from self._ensure_safe_height(0.25, grip_push)
@@ -1046,7 +1046,7 @@ class EpisodeController:
                 best_dir = d
 
         rot_push = site_rot_from_zx(np.array([0.0, 0.0, -1.0]), best_dir)
-        z_site = max(0.014, 0.68 * af) + pad_tip_for_gap(0.6 * th)
+        z_site = max(0.014, 0.68 * af) + pad_tip_for_gap(0.75 * th)
         d_start = max(0.052, 0.5 * th + 0.038)
         d_end = max(0.044, 0.90 * af)
         p_start = np.array([pos[0] - d_start * best_dir[0], pos[1] - d_start * best_dir[1], z_site], dtype=np.float64)
