@@ -1016,6 +1016,11 @@ def reconstruct_parts(
                         continue
                     if not (0.25 <= float(pt3[0]) <= 1.22 and -0.55 + _cell.LAYOUT_SHIFT[1] <= float(pt3[1]) <= 0.55 and -0.05 <= float(pt3[2]) <= 0.35):
                         continue
+                    # A washer outside the fixture block cannot float > 6.5 cm in the air (rejects false cross-part stereo pairs).
+                    if cls_name.startswith("washer") and float(pt3[2]) > 0.065:
+                        lx_p, ly_p = _fixture_local_xy(pt3[:2], fx, fy, fyaw)
+                        if not (-0.16 <= lx_p <= 0.16 and -0.15 <= ly_p <= 0.15):
+                            continue
                     cand_pairs.append((epi, il, ir, pt3))
             cand_pairs.sort(key=lambda t: t[0])
             for _epi, il, ir, pt3 in cand_pairs:

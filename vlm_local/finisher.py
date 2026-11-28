@@ -89,6 +89,17 @@ def search_pattern(clearance: float, chamfer: float, attempt: int = 0) -> list[t
     return [(1.4 * R * math.cos(k * math.pi / 2 + math.pi / 4), 1.4 * R * math.sin(k * math.pi / 2 + math.pi / 4)) for k in range(4)]
 
 
+def washer_search_pattern(play: float, attempt: int = 0) -> list[tuple[float, float]]:
+    """Finer xy search (m) for inserting a bolt through an unchamfered washer bore of radial play `play` (~1.5-2.5 mm)."""
+    r0 = float(np.clip(1.1 * play, 0.0018, 0.0025))
+    d0 = round(1.13 * r0, 5)
+    if attempt == 0:
+        return [(0.0, 0.0), (r0, 0.0), (-r0, 0.0), (0.0, r0), (0.0, -r0),
+                (d0, d0), (-d0, -d0), (d0, -d0), (-d0, d0)]
+    r = 0.0045 if attempt == 1 else 0.0065
+    return [(r * math.cos(k * math.pi / 4), r * math.sin(k * math.pi / 4)) for k in range(8)]
+
+
 @dataclass
 class HeldPart:
     model: str                      # FASTENER_GEOM key
@@ -97,6 +108,8 @@ class HeldPart:
     d_along: float = 0.0            # bolt: pad centre offset toward the head along the axis
     axis_height: float = 0.0        # bolt: shank-axis height above the table at the grasp
     nut_pad_bottom: float = 0.0     # nut: height of the pad bottom above the nut bottom while held
+    support_thickness: float = 0.0  # bolt: thickness of washer already lying over the bore mouth
+    washer_hole: float = 0.0        # bolt: inner diameter of washer under head (0 when none)
 
 
 @dataclass
@@ -130,7 +143,12 @@ class PlacementFinisher:
         c = self.c
         sg = SEAT_LOCAL_GEOM[seat_id]
         seats, fyaw, _ = c._get_filtered_fixture()
-        seat_xyz = np.asarray(seats[seat_id], float)
+        wfix = getattr(c, "_wrist_fixture", None)
+        if wfix is not None and seat_id in wfix[0]:
+            seat_xyz = np.asarray(wfix[0][seat_id], float)
+            fyaw = float(wfix[1])
+        else:
+            seat_xyz = np.asarray(seats[seat_id], float)
         if held.kind == "bolt":
             plan = self._best_bolt_plan(held, seat_id, sg, seat_xyz, fyaw)
         else:
@@ -155,7 +173,7 @@ class PlacementFinisher:
         # release (also when we ran out of tries: the post-release check + re-grasp handle the rest)
         yield from c._grip_hold(plan["g_release"], steps=12, early_stop=True)
         yield from self._retreat(plan)
-        ok, why = yield from self._verify(held, seat_id, goal)
+        ok, why = yield from self._verify(held, seat_id, goal, released_ok=released_ok)
         return FinishResult(ok=ok, reason=("aligned_release; " if released_ok else "forced_release; ") + why, stages=stages)
 
     # ---------------------------------------------------------------- plans (all poses derived from geometry)
@@ -189,6 +207,8 @@ class PlacementFinisher:
                    approach_yaw: float | None = None) -> dict[str, Any]:
         g = bolt_geom(held.model)
         top_z = float(sg["top_z"])
+        w_th = max(0.0, float(getattr(held, "support_thickness", 0.0)))
+        support_top_z = top_z + w_th
         z_s_held = float(held.ee_at_grasp[2] - held.axis_height)
         p_s_b = np.array([held.d_along, 0.0, z_s_held])
         a = reach_yaw(fyaw) if approach_yaw is None else approach_yaw
@@ -197,20 +217,27 @@ class PlacementFinisher:
         off = rot @ p_s_b
         pad_tip = bolt_pad_tip(held.model)
         pad_z_drop = abs(rot[2, 0]) * PAD_HALF_WIDTH_X + abs(rot[2, 1]) * 0.012 + max(0.0, -rot[2, 2]) * pad_tip
-        min_site_z = top_z + 0.002 + pad_z_drop
-        b_pre = np.array([seat_xyz[0], seat_xyz[1], top_z + 0.025 - g["tip_x"]])
+        min_site_z = support_top_z + 0.002 + pad_z_drop
+        b_pre = np.array([seat_xyz[0], seat_xyz[1], support_top_z + 0.025 - g["tip_x"]])
         s_pre = b_pre - off
-        corner = g["across_flats"] / math.sqrt(3.0)
-        head_sink = float(np.clip(0.5 * sg["diameter"] + sg["chamfer"] - corner, 0.0, sg["chamfer"]))
-        b_seated_z = top_z - head_sink - g["under_head_x"]
+        if w_th > 0.0:
+            b_seated_z = support_top_z - g["under_head_x"]
+        else:
+            corner = g["across_flats"] / math.sqrt(3.0)
+            head_sink = float(np.clip(0.5 * sg["diameter"] + sg["chamfer"] - corner, 0.0, sg["chamfer"]))
+            b_seated_z = top_z - head_sink - g["under_head_x"]
         s_ins_z = max(min_site_z, b_seated_z - off[2] + 0.002)
         s_ins = np.array([seat_xyz[0] - off[0], seat_xyz[1] - off[1], s_ins_z])
         clearance = seat_clearance(held.model, seat_id)
+        w_hole = float(getattr(held, "washer_hole", 0.0))
+        w_play = max(0.0015, 0.5 * (w_hole - g["diameter"])) if w_hole > g["diameter"] else 0.002
+        s_tr_z = max(0.275, float(s_pre[2]) + 0.035)
         return {
             "kind": "bolt", "rot": rot, "s_pre": s_pre, "s_end": s_ins, "wrist_up": True, "grip": 0.0,
-            "s_transit": np.array([s_pre[0], s_pre[1], 0.275]), "g_release": 0.65,
+            "s_transit": np.array([s_pre[0], s_pre[1], s_tr_z]), "g_release": 0.65,
             "clearance": clearance, "chamfer": float(sg["chamfer"]), "stall_lag": 0.006, "stall_margin": 0.004,
             "seat_xyz": seat_xyz, "fyaw": fyaw, "pad_tip": pad_tip,
+            "on_washer": w_th > 0.0, "washer_play": w_play,
             "xy_tol": max(self.tol.xy_floor, 0.5 * clearance + 0.001),
         }
 
@@ -295,7 +322,7 @@ class PlacementFinisher:
         """Vertical descent with proprio stall detection; on a stall lift, move to the next search point, retry.
         The search pattern (xy ring radii) is scaled from the bore/pocket clearance and chamfer; nuts also try +-yaw."""
         c = self.c
-        pts = search_pattern(p["clearance"], p["chamfer"], attempt)
+        pts = washer_search_pattern(p.get("washer_play", 0.002), attempt) if p.get("on_washer") else search_pattern(p["clearance"], p["chamfer"], attempt)
         trials: list[tuple[float, float, float]] = [(ox, oy, 0.0) for ox, oy in pts]
         if p["kind"] == "nut":
             # rotate-until-drop: the nut can sit a few degrees off the pads' yaw (it turns in the grip), and the hex
@@ -389,9 +416,14 @@ class PlacementFinisher:
         z_up = max(float(cur[2]) + 0.010, float(p["s_pre"][2]) - 0.010)
         yield from c._move_cartesian(np.array([cur[0], cur[1], z_up]), p["rot"], 0.0, pos_speed=0.014, max_step=0.035,
                                      settle=1, wrist_up=p["wrist_up"])
-        # re-aim at the seat centre (fresh filtered fixture estimate) with the nominal orientation
-        seats, fyaw, _ = c._get_filtered_fixture()
-        seat_xyz = np.asarray(seats[self._seat_id(p)], float)
+        # re-aim at the seat centre (wrist-refined fixture if available, else fresh filtered fixture estimate)
+        wfix = getattr(c, "_wrist_fixture", None)
+        sid = self._seat_id(p)
+        if wfix is not None and sid in wfix[0]:
+            seat_xyz = np.asarray(wfix[0][sid], float)
+        else:
+            seats, fyaw, _ = c._get_filtered_fixture()
+            seat_xyz = np.asarray(seats[sid], float)
         shift = np.array([seat_xyz[0] - p["seat_xyz"][0], seat_xyz[1] - p["seat_xyz"][1], 0.0])
         p["s_pre"] = p["s_pre"] + shift
         p["s_end"] = p["s_end"] + shift
@@ -419,7 +451,7 @@ class PlacementFinisher:
             for i in range(10):
                 yield c._emit_hold(p["g_release"], want_vision=(i == 8))
 
-    def _verify(self, held: HeldPart, seat_id: str, goal: Any) -> Iterator[StepCommand]:
+    def _verify(self, held: HeldPart, seat_id: str, goal: Any, *, released_ok: bool = False) -> Iterator[StepCommand]:
         """Re-observe (cameras via the existing perception) and decide with `is_part_in_seat`. Returns (ok, why)."""
         c = self.c
         grip = 0.65 if held.kind == "bolt" else 0.80
@@ -428,17 +460,22 @@ class PlacementFinisher:
         scene = c.scene
         if scene is None:
             return True, "no_scene"
-        seat_xy = np.asarray(scene.seats[seat_id], float)[:2]
+        wfix = getattr(c, "_wrist_fixture", None)
+        seat_xy = np.asarray(wfix[0][seat_id], float)[:2] if (wfix is not None and seat_id in wfix[0]) else np.asarray(scene.seats[seat_id], float)[:2]
         cands = [q for q in scene.parts if q.kind == held.kind and q.confidence >= 0.35]
         near = [q for q in cands if float(np.linalg.norm(q.position[:2] - seat_xy)) < 0.06]
         for q in sorted(near, key=lambda q: float(np.linalg.norm(q.position[:2] - seat_xy))):
             if is_part_in_seat(q, seat_id, scene):
                 return True, "in_seat"
+        elsewhere = c._select(goal, min_confidence=0.60, ignore_seated=True) if goal is not None else None
+        if held.kind == "bolt" and held.support_thickness > 0.0 and released_ok:
+            if elsewhere is None or float(np.linalg.norm(elsewhere.position[:2] - seat_xy)) < 0.04:
+                if not near or (float(np.linalg.norm(near[0].position[:2] - seat_xy)) < 0.028 and float(near[0].position[2]) > 0.05):
+                    return True, "seated_on_washer"
         if near:
             q = near[0]
             return False, f"perched d_xy={float(np.linalg.norm(q.position[:2] - seat_xy)):.3f} z={float(q.position[2]):.3f}"
         # not near the seat: the tracked part (selected the way the controller selects it) found elsewhere = fell out
-        elsewhere = c._select(goal, min_confidence=0.60, ignore_seated=True) if goal is not None else None
         if elsewhere is not None and float(elsewhere.position[1]) < 0.05 + LAYOUT_SHIFT[1]:
             return False, f"fell_out at {np.round(elsewhere.position[:2], 3).tolist()}"
         # nothing seen near the seat and nothing seen elsewhere: cannot confirm the part is seated -> treat as unverified

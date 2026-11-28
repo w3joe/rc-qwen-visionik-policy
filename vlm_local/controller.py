@@ -37,6 +37,7 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
         self.instruction = str(first_obs.get("instruction") or "")
         self.events: list[dict] = []
         self.finisher_results: list = []
+        self._wrist_fixture: tuple[dict[str, np.ndarray], float] | None = None
 
     def _log(self, kind: str, **kw: Any) -> None:
         ev = {"step": self.step_idx, "event": kind, **kw}
@@ -60,16 +61,25 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
         for floor in (min_confidence, 0.15):  # same relaxation as the original selector
             pool = [p for p in self.scene.parts if p.kind == goal.part_kind and p.confidence >= floor
                     and not (ignore_seated and goal.seat_id and is_part_in_seat(p, goal.seat_id, self.scene))]
+            if ignore_seated and goal.part_kind == "washer":
+                table_pool = [p for p in pool if float(p.position[2]) <= 0.055 or self.scene.fixture_distance(p.position[:2]) <= 0.04]
+                if table_pool:
+                    pool = table_pool
             same = [p for p in pool if p.raw_kind == goal.part_model]
             if goal.part_kind == "bolt" and same:
-                pool, radius = same, 0.5
+                cand_lists = [(same, 0.5)]
+            elif same:
+                cand_lists = [(pool, TRACK_RADIUS), (same, 0.5)]
             else:
-                radius = TRACK_RADIUS
-            best_d = radius
-            for p in pool:
-                d = float(np.linalg.norm(p.position[:2] - goal.target_xy))
-                if d < best_d:
-                    best, best_d = p, d
+                cand_lists = [(pool, TRACK_RADIUS)]
+            for cpool, radius in cand_lists:
+                best_d = radius
+                for p in cpool:
+                    d = float(np.linalg.norm(p.position[:2] - goal.target_xy))
+                    if d < best_d:
+                        best, best_d = p, d
+                if best is not None:
+                    break
             if best is not None:
                 break
         if best is not None and best.confidence >= 0.4:
@@ -87,8 +97,9 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
         if goal.relation == "on" and goal.ref_part_kind == "bolt":
             geom = FASTENER_GEOM.get(goal.ref_model or "bolt_m30x60", FASTENER_GEOM["bolt_m30x60"])
             return geom["head_height"]  # washer resting on the head of a bolt standing on its head
-        if goal.seat_id in SEAT_LOCAL_GEOM:
-            g = SEAT_LOCAL_GEOM[goal.seat_id]
+        seat_key = goal.seat_id or (goal.ref_seat if goal.relation == "on" else "")
+        if seat_key in SEAT_LOCAL_GEOM:
+            g = SEAT_LOCAL_GEOM[seat_key]
             return float(g["floor_z"] if g["kind"] == "tray" else g["top_z"])
         if goal.relation == "on":
             return 0.03
@@ -219,7 +230,9 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
             seat = SEAT_LOCAL_GEOM.get(getattr(goal, "seat_id", ""), {})
             kind = seat.get("kind")
             rel = getattr(goal, "relation", None)
-            if rel:
+            if rel == "on" and goal.part_kind == "washer" and getattr(goal, "ref_part_kind", None) == "bolt":
+                yield from self._execute_washer_on_bolt_goal(goal)
+            elif rel:
                 yield from self._execute_place_goal(goal)
             elif kind == "tray" and goal.part_kind in ("bolt", "washer"):
                 yield from self._execute_tray_goal(goal)
@@ -227,8 +240,10 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
                 yield from self._execute_place_goal(goal)          # nut -> tray
             elif kind == "hole_vertical" and goal.part_kind == "bolt":
                 yield from self._execute_bolt_hole_goal(goal)
+            elif kind == "hole_vertical" and goal.part_kind == "washer":
+                yield from self._execute_washer_bore_goal(goal)    # washer flat over hole mouth
             elif kind == "hole_vertical":
-                yield from self._execute_place_goal(goal)          # washer over a hole mouth
+                yield from self._execute_place_goal(goal)
             elif kind == "hex_pocket" and goal.part_kind == "nut":
                 yield from self._execute_nut_pocket_goal(goal)
             else:
