@@ -513,9 +513,11 @@ class EpisodeController:
         pos = part.position
         fyaw = reach_yaw(fyaw)  # headings below were designed for a yaw-0 fixture (see cell.reach_yaw)
         if goal.part_kind == "washer":
-            geom = FASTENER_GEOM["washer_m30"]
+            geom = FASTENER_GEOM.get(goal.part_model, FASTENER_GEOM["washer_m33"])
             grasp_yaw = nearest_pi_yaw(fyaw, ref_yaw)
-            z_tip = max(float(pos[2]) - 0.5 * geom["thickness"], 0.0) + PAD_TIP_WASHER + 0.0015
+            # a flat washer's centre sits at half its thickness; camera depth from the low views reads it high
+            z_c = min(float(pos[2]), 0.5 * geom["thickness"] + 0.002)
+            z_tip = max(z_c - 0.5 * geom["thickness"], 0.0) + PAD_TIP_WASHER + 0.0015
             grasp_pos = np.array([float(pos[0]), float(pos[1]), z_tip], dtype=np.float64)
             return grasp_pos, down_mat(grasp_yaw), 0.82, 0.24, {"mode": "washer", "grasp_yaw": grasp_yaw}
 
