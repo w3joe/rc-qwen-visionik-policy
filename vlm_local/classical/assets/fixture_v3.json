@@ -1,0 +1,139 @@
+{
+  "_note": "Fixture v3 spec, revision 3 (Nov 2026, printed as fixture v5): the block raised to 115 mm so the dataset bolts (M16x50, M24x70, M30x100) seat; holes 55 / 75 / 105 mm deep; 8 mm hole chamfers, 4 mm hex-pocket lead-ins; positions, diameters and across-flats unchanged. Millimetres, fixture-local: origin = footprint centre at table level, +x away from robot, z up.",
+  "footprint": [
+    250.0,
+    230.0
+  ],
+  "height": 115.0,
+  "base_floor_z": 4.0,
+  "tray": {
+    "inner_x": [
+      -121.0,
+      -26.0
+    ],
+    "inner_y": [
+      -111.0,
+      111.0
+    ],
+    "wall": 4.0,
+    "wall_top_z": 22.0,
+    "floor_z": 4.0,
+    "back_wall": "block front face"
+  },
+  "block": {
+    "x": [
+      -26.0,
+      125.0
+    ],
+    "y": [
+      -115.0,
+      115.0
+    ],
+    "top_z": 115.0,
+    "edge_chamfer": 2.0
+  },
+  "bores": [
+    {
+      "id": "bore_m24",
+      "kind": "bore",
+      "xy": [
+        7.2,
+        86.0
+      ],
+      "diameter": 28.0,
+      "depth": 75.0,
+      "mouth_chamfer": 8.0,
+      "floor_z": 40.0,
+      "part": "M24x70"
+    },
+    {
+      "id": "bore_m16",
+      "kind": "bore",
+      "xy": [
+        7.2,
+        3.5
+      ],
+      "diameter": 20.0,
+      "depth": 55.0,
+      "mouth_chamfer": 8.0,
+      "floor_z": 60.0,
+      "part": "M16x50"
+    },
+    {
+      "id": "bore_m30",
+      "kind": "bore",
+      "xy": [
+        7.2,
+        -82.5
+      ],
+      "diameter": 35.0,
+      "depth": 105.0,
+      "mouth_chamfer": 8.0,
+      "floor_z": 10.0,
+      "part": "M30x100"
+    }
+  ],
+  "hex_pockets": [
+    {
+      "id": "hex_m30",
+      "kind": "hex_pocket",
+      "xy": [
+        77.35,
+        77.5
+      ],
+      "across_flats": 51.0,
+      "depth": 13.0,
+      "mouth_chamfer": 4.0,
+      "floor_z": 102.0,
+      "flats_facing": "±y",
+      "part": "M30 nut"
+    },
+    {
+      "id": "hex_m36",
+      "kind": "hex_pocket",
+      "xy": [
+        77.35,
+        -5.0
+      ],
+      "across_flats": 60.0,
+      "depth": 15.0,
+      "mouth_chamfer": 4.0,
+      "floor_z": 100.0,
+      "flats_facing": "±y",
+      "part": "M36 nut"
+    },
+    {
+      "id": "hex_m24",
+      "kind": "hex_pocket",
+      "xy": [
+        77.35,
+        -82.5
+      ],
+      "across_flats": 41.0,
+      "depth": 10.0,
+      "mouth_chamfer": 4.0,
+      "floor_z": 105.0,
+      "flats_facing": "±y",
+      "part": "M24 nut"
+    }
+  ],
+  "lettering": {
+    "text": [
+      "REALITY",
+      "CHECK"
+    ],
+    "font": "Archivo wdth125 wght900",
+    "cap_height": 14.5,
+    "faces": [
+      "+y",
+      "-y"
+    ],
+    "inlay_depth": 0.8,
+    "body": "fixture_text.stl"
+  },
+  "print": {
+    "orientation": "as modelled, base on bed",
+    "supports": "none",
+    "bed": "Bambu X2D 256x256"
+  }
+}

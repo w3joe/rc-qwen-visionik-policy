@@ -1,0 +1,169 @@
+{
+ "version": 1,
+ "frame": "robot base (UR base_link): origin at the base centre on the mounting plane, z up",
+ "table_z_in_base": -0.187,
+ "scan_to_robot": {
+  "yaw_deg": 43.5312,
+  "xy": [
+   1.21007,
+   -1.12773
+  ],
+  "provisional": true,
+  "source": "scan: robot base housing circle fit; x perpendicular to the table edge"
+ },
+ "table": {
+  "centre_xy": [
+   0.621,
+   0.0361
+  ],
+  "yaw_deg": 90.0,
+  "size": [
+   2.5473,
+   1.0639
+  ],
+  "thickness": 0.1597,
+  "height": 0.802,
+  "texture": "tabletop.png",
+  "tile_m": 0.5445,
+  "rgba": [
+   1.0,
+   1.0,
+   1.0,
+   1.0
+  ],
+  "specular": 0.5,
+  "shininess": 0.8,
+  "reflectance": 0.04
+ },
+ "pedestal": {
+  "column_width": 0.152,
+  "disc_xy": [
+   0.0537,
+   -0.0214
+  ],
+  "disc_radius": 0.4053,
+  "disc_height": 0.135,
+  "rgba": {
+   "disc": [
+    0.62,
+    0.63,
+    0.64,
+    1.0
+   ],
+   "column": [
+    0.16,
+    0.16,
+    0.17,
+    1.0
+   ]
+  }
+ },
+ "fixture": {
+  "rgba": [
+   0.2706,
+   0.7922,
+   0.9451,
+   1.0
+  ],
+  "scan_pose": {
+   "xy": [
+    0.5944,
+    0.0087
+   ],
+   "yaw_deg": -90.73
+  },
+  "nominal": {
+   "xy": [
+    0.594,
+    0.009
+   ],
+   "yaw_deg": -90.0
+  }
+ },
+ "cameras": {
+  "left": {
+   "pos": [
+    1.0258,
+    0.3027,
+    0.0043
+   ],
+   "xyaxes": [
+    -0.57209,
+    0.82018,
+    -0.00376,
+    -0.09034,
+    -0.05846,
+    0.99419
+   ],
+   "in_board": {
+    "rvec": [
+     -1.342595628306188,
+     -0.695001432851647,
+     -0.7798765270809691
+    ],
+    "tvec": [
+     -0.26298133184608036,
+     0.1566343665205927,
+     0.3396958588158052
+    ]
+   },
+   "source": "board solve chained through the board's pose in the scan",
+   "fovy": 54.9,
+   "size": [
+    640,
+    360
+   ],
+   "provisional": true
+  },
+  "right": {
+   "pos": [
+    1.1212,
+    -0.1976,
+    0.3731
+   ],
+   "xyaxes": [
+    0.43279,
+    0.90074,
+    -0.03695,
+    -0.59615,
+    0.3167,
+    0.73777
+   ],
+   "in_board": {
+    "rvec": [
+     -0.5593422890806815,
+     -0.8098358219710905,
+     -1.896372011216959
+    ],
+    "tvec": [
+     0.02123114890078955,
+     0.2575834152953689,
+     0.5478435926117192
+    ]
+   },
+   "source": "board solve chained through the board's pose in the scan",
+   "fovy": 54.9,
+   "size": [
+    640,
+    360
+   ],
+   "provisional": true
+  },
+  "wrist": {
+   "fovy": 61.1,
+   "size": [
+    640,
+    360
+   ],
+   "source": "Gemini 335Lg factory fy 305.2 at 640 x 360"
+  }
+ },
+ "board": {
+  "turn": 1,
+  "source": "camera solves on the scanned tripods: 0.11 m vs 1.31 m turned"
+ },
+ "measured": {
+  "table_near_edge_x": 0.089,
+  "pedestal_column_width": 0.152
+ }
+}

@@ -17,6 +17,13 @@ from typing import Any, Iterator
 import numpy as np
 
 from .cell import BASE_WORLD, LAYOUT_SHIFT, reach_yaw, shifted
+from .cumotion import (
+    CuMotionPlanner,
+    HeldPartSpec,
+    cumotion_enabled,
+    make_held_bolt_spec,
+    make_held_washer_spec,
+)
 from .kinematics import (
     HOME_Q,
     NUM_JOINTS,
@@ -136,6 +143,12 @@ class EpisodeController:
         self.want_vision: bool = True
         self.step_idx: int = 0
         self._decoy_positions: list[np.ndarray] = []
+        self._held_spec: HeldPartSpec | None = None
+        self.cumotion: CuMotionPlanner | None = (
+            CuMotionPlanner(joint_pos=proprio["joint_pos"], ee_rot=proprio["ee_rot"])
+            if cumotion_enabled()
+            else None
+        )
 
         self._gen: Iterator[StepCommand] = self._run_episode()
 
@@ -166,6 +179,33 @@ class EpisodeController:
 
     # ------------------------------------------------------------------ low-level primitives
 
+    def _effective_grip(self, cmd_grip: float) -> float:
+        g_cmd = float(np.clip(cmd_grip, 0.0, 1.0))
+        g_live = float(np.clip(self.proprio.get("gripper", g_cmd), 0.0, 1.0))
+        if g_cmd <= 0.05:
+            return max(0.08, g_live)
+        return max(g_cmd, 0.5 * g_live)
+
+    def _sync_cumotion(self, *, exclude_xy: np.ndarray | None = None) -> None:
+        if self.cumotion is None:
+            return
+        seats, fyaw, fxy = self._get_filtered_fixture()
+        wfix = getattr(self, "_wrist_fixture", None)
+        if wfix is not None and "bore_m16" in wfix[0]:
+            fyaw = float(wfix[1])
+            lx, ly = SEAT_LOCAL_GEOM["bore_m16"]["local_xy"]
+            c, s = math.cos(fyaw), math.sin(fyaw)
+            b16 = np.asarray(wfix[0]["bore_m16"], dtype=np.float64)
+            fxy = np.array([b16[0] - (c * lx - s * ly), b16[1] - (s * lx + c * ly)], dtype=np.float64)
+        parts = list(self.scene.parts) if self.scene is not None else []
+        self.cumotion.sync_scene(
+            fixture_xy=fxy,
+            fixture_yaw=fyaw,
+            parts=parts,
+            exclude_xy=exclude_xy,
+            held=self._held_spec,
+        )
+
     def _emit_toward(
         self,
         q_goal: np.ndarray,
@@ -174,7 +214,13 @@ class EpisodeController:
         max_step: float = SAFE_STEP_LIMIT,
         want_vision: bool = False,
     ) -> StepCommand:
-        dq, q_next = compute_safe_delta(self.q_target, q_goal, max_step=max_step)
+        eff_step = float(max_step)
+        if self.cumotion is not None:
+            dq_probe, _ = compute_safe_delta(self.q_target, q_goal, max_step=eff_step)
+            scale = self.cumotion.scene.safe_step_scale(self.q_target, dq_probe)
+            if scale < 1.0:
+                eff_step = max(0.005, eff_step * scale)
+        dq, q_next = compute_safe_delta(self.q_target, q_goal, max_step=eff_step)
         self.q_target = q_next
         return dq, float(np.clip(grip, 0.0, 1.0)), want_vision
 
@@ -201,10 +247,20 @@ class EpisodeController:
         want_vision: bool = False,
     ) -> Iterator[StepCommand]:
         q_goal = np.asarray(q_goal, dtype=np.float64)
-        for _ in range(max_steps):
-            if float(np.max(np.abs(q_goal - self.q_target))) <= 2e-4:
-                break
-            yield self._emit_toward(q_goal, grip, max_step=max_step, want_vision=want_vision)
+        waypoints = [q_goal]
+        if self.cumotion is not None and float(np.max(np.abs(q_goal - self.q_target))) > 0.08:
+            self._sync_cumotion()
+            waypoints = self.cumotion.plan_joint_waypoints(
+                self.q_target,
+                q_goal,
+                self._effective_grip(grip),
+            )
+        per_wp_budget = max(60, max_steps // max(1, len(waypoints)))
+        for wp in waypoints:
+            for _ in range(per_wp_budget):
+                if float(np.max(np.abs(wp - self.q_target))) <= 2e-4:
+                    break
+                yield self._emit_toward(wp, grip, max_step=max_step, want_vision=want_vision)
         for _ in range(settle):
             yield self._emit_toward(q_goal, grip, max_step=max_step, want_vision=want_vision)
             err = float(np.max(np.abs(self.proprio["joint_pos"] - q_goal)))
@@ -225,10 +281,40 @@ class EpisodeController:
         tol: float = 0.010,
         wrist_up: bool = False,
         want_vision: bool = False,
+        ignore_held_at_end: bool = False,
     ) -> Iterator[StepCommand]:
         pos_goal = np.asarray(pos_goal, dtype=np.float64)
         rot_goal = np.asarray(rot_goal, dtype=np.float64)
         pos0, rot0 = fk_pose(self.q_target)
+        if self.cumotion is not None:
+            self._sync_cumotion(exclude_xy=pos_goal[:2] if grip > 0.25 else None)
+            q_seq = self.cumotion.plan_cartesian_waypoints(
+                pos0,
+                rot0,
+                pos_goal,
+                rot_goal,
+                self.q_target,
+                self._effective_grip(grip),
+                pos_speed=pos_speed,
+                rot_speed=rot_speed,
+                wrist_up=wrist_up,
+                ignore_held_at_end=ignore_held_at_end or (pos_goal[2] < pos0[2] - 0.015),
+            )
+            q_prev = self.q_target.copy()
+            for q_t in q_seq:
+                q_prev = q_t
+                for _ in range(35):
+                    if float(np.max(np.abs(q_t - self.q_target))) <= 2e-4:
+                        break
+                    yield self._emit_toward(q_t, grip, max_step=max_step, want_vision=want_vision)
+            for _ in range(settle):
+                yield self._emit_toward(q_prev, grip, max_step=max_step, want_vision=want_vision)
+                err = float(np.max(np.abs(self.proprio["joint_pos"] - q_prev)))
+                vel = float(np.max(np.abs(self.proprio["joint_vel"])))
+                if err < tol and vel < 0.05:
+                    break
+            return
+
         dist = float(np.linalg.norm(pos_goal - pos0))
         ang = float(np.linalg.norm(rot_error(rot0, rot_goal)))
         n_seg = max(1, int(math.ceil(max(dist / pos_speed, ang / rot_speed))))
@@ -258,6 +344,10 @@ class EpisodeController:
         early_stop: bool = True,
         want_vision: bool = False,
     ) -> Iterator[StepCommand]:
+        if float(grip) > 0.35:
+            self._held_spec = None
+            if self.cumotion is not None:
+                self.cumotion.clear_held()
         prev_g = self.proprio["gripper"]
         still = 0
         for i in range(steps):
@@ -522,6 +612,14 @@ class EpisodeController:
             # Table top is z=0 (camera stereo z reads ~2 cm high); pads pinch the 5 mm rim right at table level.
             z_tip = PAD_TIP_WASHER - float(os.environ.get("RC_WASHER_DZ", "0.0025"))
             grasp_pos = np.array([float(pos[0]), float(pos[1]), z_tip], dtype=np.float64)
+            if self.cumotion is not None:
+                self._sync_cumotion(exclude_xy=pos[:2])
+                cands = []
+                for k in range(8):
+                    yk = wrap_angle(fyaw + k * (math.pi / 4.0))
+                    bonus = 0.05 if abs(wrap_angle(yk - grasp_yaw)) < 0.2 else 0.0
+                    cands.append((grasp_pos, down_mat(yk), 0.82, 0.25, {"mode": "washer", "grasp_yaw": yk, "prior_bonus": bonus}))
+                return self.cumotion.select_grasp_pose(cands, self.q_target)
             return grasp_pos, down_mat(grasp_yaw), 0.82, 0.24, {"mode": "washer", "grasp_yaw": grasp_yaw}
 
         # Bolt (M30x60 or generic)
@@ -568,6 +666,21 @@ class EpisodeController:
         z_axis = min(float(p_shank[2]), float(geom.get("lying_radius", 0.5 * geom["diameter"])))  # geometry, not camera depth
         z_tip = max(z_axis - 0.5 * geom["diameter"], 0.004) + PAD_TIP_BOLT_M30
         grasp_pos = np.array([float(p_shank[0]), float(p_shank[1]), z_tip], dtype=np.float64)
+        if self.cumotion is not None:
+            self._sync_cumotion(exclude_xy=p_shank[:2])
+            cands = []
+            for yk in (wrap_angle(bolt_yaw), wrap_angle(bolt_yaw + math.pi)):
+                bonus = 0.05 if abs(wrap_angle(yk - grasp_yaw)) < 0.2 else 0.0
+                cands.append(
+                    (
+                        grasp_pos,
+                        down_mat(yk),
+                        0.65,
+                        0.26,
+                        {"mode": "lying", "grasp_yaw": yk, "bolt_yaw": bolt_yaw, "prior_bonus": bonus},
+                    )
+                )
+            return self.cumotion.select_grasp_pose(cands, self.q_target)
         return (
             grasp_pos,
             down_mat(grasp_yaw),
@@ -613,10 +726,17 @@ class EpisodeController:
             # 3. Close gripper
             close_steps = 16 if goal.part_kind == "washer" else 14
             yield from self._grip_hold(0.0, steps=close_steps, early_stop=True, want_vision=False)
+            if self.cumotion is not None:
+                if goal.part_kind == "washer":
+                    self._held_spec = make_held_washer_spec(goal.part_model or "washer_m33", pad_tip=PAD_TIP_WASHER)
+                else:
+                    self._held_spec = make_held_bolt_spec(
+                        goal.part_model or "bolt_m30x100", d_along=0.0, z_s_held=0.130, head_along_neg_x=False
+                    )
 
             # 4. Lift and verify grasp purely via proprio gripper reading
             cur_p, cur_r = fk_pose(self.q_target)
-            lift_z = 0.26 if goal.part_kind == "washer" else 0.295
+            lift_z = (0.305 if self.cumotion is not None else 0.26) if goal.part_kind == "washer" else 0.305
             yield from self._move_cartesian(
                 np.array([cur_p[0], cur_p[1], lift_z], dtype=np.float64),
                 cur_r,

@@ -32,10 +32,11 @@ from typing import Any, Iterator
 
 import numpy as np
 
+from .classical.cell import LAYOUT_SHIFT, reach_yaw
+from .classical.cumotion import make_held_bolt_spec
 from .classical.kinematics import (PAD_HALF_WIDTH_X, PAD_TIP_BOLT_M16, PAD_TIP_BOLT_M24, PAD_TIP_BOLT_M30,
                                    PAD_TIP_CLOSED, PAD_TIP_NUT_FLAT, closest_hex_yaw, fk_pose, pad_tip_for_gap,
                                    site_rot_from_zx, site_rot_from_zy, slerp_rot, wrap_angle)
-from .classical.cell import LAYOUT_SHIFT, reach_yaw
 from .classical.planner import EMPTY_GRIPPER_THRESH
 from .classical.scene_interface import FASTENER_GEOM, SEAT_LOCAL_GEOM, PartEstimate, is_part_in_seat
 
@@ -194,6 +195,30 @@ class PlacementFinisher:
         wrist below the base plane). Try the four headings and keep the first whose transit / pre-insert / insert poses
         all solve exactly and clear the table."""
         c = self.c
+        if getattr(c, "cumotion", None) is not None:
+            top_z = float(sg["top_z"])
+            w_th = max(0.0, float(getattr(held, "support_thickness", 0.0)))
+            support_top_z = top_z + w_th
+            pad_tip = bolt_pad_tip(held.model)
+            z_s_held = float(np.clip(held.ee_at_grasp[2] - held.axis_height, pad_tip - 0.026, pad_tip - 0.003))
+            held_spec = make_held_bolt_spec(held.model, d_along=held.d_along, z_s_held=z_s_held, head_along_neg_x=True)
+            c._held_spec = held_spec
+            c._sync_cumotion(exclude_xy=seat_xyz[:2])
+            best, diag = c.cumotion.select_bolt_insertion_plan(
+                build_plan_fn=lambda y: self._bolt_plan(held, seat_id, sg, seat_xyz, fyaw, approach_yaw=y),
+                fyaw=fyaw,
+                q_ref=c.q_target,
+                grip_held=c._effective_grip(0.0),
+                held_spec=held_spec,
+                support_top_z=support_top_z,
+            )
+            c._log(
+                "bolt_heading",
+                chosen=round(math.degrees(math.atan2(best["rot"][1, 2], best["rot"][0, 2])), 1),
+                cumotion=diag,
+            )
+            return best
+
         # Preferred: approach along the fixture's +x (from the tray toward the block) so the gripper body hangs over the
         # low tray, not over the 115 mm block it would rest on; then the other headings in fixture quarter turns.
         best, best_cost, tried = None, float("inf"), []
@@ -220,13 +245,15 @@ class PlacementFinisher:
         top_z = float(sg["top_z"])
         w_th = max(0.0, float(getattr(held, "support_thickness", 0.0)))
         support_top_z = top_z + w_th
+        pad_tip = bolt_pad_tip(held.model)
         z_s_held = float(held.ee_at_grasp[2] - held.axis_height)
+        if getattr(self.c, "cumotion", None) is not None:
+            z_s_held = float(np.clip(z_s_held, pad_tip - 0.026, pad_tip - 0.003))
         p_s_b = np.array([held.d_along, 0.0, z_s_held])
         a = reach_yaw(fyaw) if approach_yaw is None else approach_yaw
         approach_xy = np.array([math.cos(a), math.sin(a), 0.0])  # gripper approach (+z_site), horizontal
         rot = site_rot_from_zx(approach_xy, np.array([0.0, 0.0, -1.0]))
         off = rot @ p_s_b
-        pad_tip = bolt_pad_tip(held.model)
         link_z_drop = abs(rot[2, 0]) * SPRING_LINK_HALF_X + abs(rot[2, 1]) * 0.012 + max(0.0, -rot[2, 2]) * pad_tip
         min_site_z = support_top_z + 0.002 + link_z_drop
         b_pre = np.array([seat_xyz[0], seat_xyz[1], support_top_z + 0.025 - g["tip_x"]])
@@ -264,6 +291,24 @@ class PlacementFinisher:
         # Keep fingertip pads >= top_z + 1.5 mm while lowering nut bottom to floor_z + 0.5 mm (parametric in pocket depth)
         min_site_z = top_z + 0.0015 + pad_tip
         s_end_z = max(min_site_z, floor_z + 0.0005 + held.nut_pad_bottom + pad_tip)
+        if getattr(c, "cumotion", None) is not None:
+            c._sync_cumotion(exclude_xy=seat_xyz[:2])
+            s_end_pt = np.array([seat_xyz[0], seat_xyz[1], s_end_z], dtype=np.float64)
+            best_yaw = des_y_yaw
+            best_sc = -1e9
+            for k in range(6):
+                yk = wrap_angle(flat_normal_yaw + k * (math.pi / 3.0))
+                rk = site_rot_from_zy(np.array([0.0, 0.0, -1.0]), np.array([math.cos(yk), math.sin(yk), 0.0]))
+                _, rep_k, ok_k = c.cumotion.solve_ik(
+                    s_end_pt, rk, c.q_target, c._effective_grip(0.0), min_clearance=0.001, ignore_held_part=True
+                )
+                if ok_k:
+                    sc_k = 20.0 * min(rep_k.min_clearance, 0.020) - 0.35 * abs(wrap_angle(yk - des_y_yaw))
+                    if sc_k > best_sc:
+                        best_sc = sc_k
+                        best_yaw = yk
+            des_y_yaw = best_yaw
+            rot = site_rot_from_zy(np.array([0.0, 0.0, -1.0]), np.array([math.cos(des_y_yaw), math.sin(des_y_yaw), 0.0]))
         # With low-force stall detection (zero pad slip), a perched nut stays >= 5.5 mm above s_end_z while an aligned nut drops within 2.9-3.5 mm
         nut_depth_tol = 0.0029 if (top_z - floor_z) <= 0.011 else 0.0035
         s_pre = np.array([seat_xyz[0], seat_xyz[1], top_z + 0.045 + pad_tip])
@@ -283,6 +328,11 @@ class PlacementFinisher:
     def _approach(self, p: dict) -> Iterator[StepCommand]:
         c = self.c
         if p["kind"] == "bolt":
+            if "q_transit" in p and getattr(c, "cumotion", None) is not None:
+                q_tr = p["q_transit"]
+                yield from c._move_joint(q_tr, 0.0, settle=2)
+                yield from c._move_cartesian(p["s_pre"], p["rot"], 0.0, pos_speed=0.016, settle=3, wrist_up=True, ignore_held_at_end=True)
+                return
             q_ins = c.ik.solve(p["s_end"], p["rot"], c.q_target, wrist_up=True).q
             q_pre = c.ik.solve(p["s_pre"], p["rot"], q_ins, wrist_up=True).q
             q_tr = c.ik.solve(p["s_transit"], p["rot"], q_pre, wrist_up=True).q
@@ -296,12 +346,14 @@ class PlacementFinisher:
             yield from c._move_cartesian(p["s_pre"], p["rot"], 0.0, pos_speed=0.016, settle=3, wrist_up=True)
         else:
             yield from c._move_cartesian(p["s_transit"], p["rot"], 0.0, pos_speed=0.025, rot_speed=0.16, settle=2)
-            # Refresh seat xy and fixture yaw from the robust multi-frame median (now including the overhead s_transit view)
-            yield c._emit_hold(0.0, want_vision=True)
+            # Refresh seat xy and fixture yaw from the robust multi-frame median only when no part has been seated yet
+            # (an already-seated nut in an adjacent pocket occludes its keypoint and biases the 6-point fit on 2nd nut!)
+            already_placed = bool(getattr(c, "finisher_results", None)) and getattr(c, "cumotion", None) is not None
+            yield c._emit_hold(0.0, want_vision=not already_placed)
             yield c._emit_hold(0.0, want_vision=False)
             seats_med, f_yaw, _ = c._get_filtered_fixture()
             sid = p.get("seat_id")
-            if sid in seats_med:
+            if (not already_placed) and sid in seats_med:
                 f_xyz = np.asarray(seats_med[sid], float)
                 if float(np.linalg.norm(f_xyz[:2] - p["seat_xyz"][:2])) < 0.035 and abs(wrap_angle(f_yaw - p["fyaw"])) < math.radians(15.0):
                     shift_xy = f_xyz[:2] - p["seat_xyz"][:2]
@@ -324,7 +376,10 @@ class PlacementFinisher:
         exp_c = None
         if p["kind"] == "bolt":
             g = bolt_geom(held.model)
+            pad_tip = bolt_pad_tip(held.model)
             z_s_held = float(held.ee_at_grasp[2] - held.axis_height)
+            if getattr(c, "cumotion", None) is not None:
+                z_s_held = float(np.clip(z_s_held, pad_tip - 0.026, pad_tip - 0.003))
             off = p["rot"] @ np.array([held.d_along, 0.0, z_s_held])
             exp_c = p["s_pre"] + off
         else:
@@ -400,10 +455,10 @@ class PlacementFinisher:
                 cur, _ = fk_pose(c.q_target)
                 z = max(float(cur[2]) + 0.012, float(s_pre[2]) - 0.006 if p["kind"] == "bolt" else float(s_end[2]) + 0.018)
                 yield from c._move_cartesian(np.array([cur[0], cur[1], z]), rot, 0.0, pos_speed=0.016, max_step=0.035,
-                                             settle=1, wrist_up=p["wrist_up"])
+                                             settle=1, wrist_up=p["wrist_up"], ignore_held_at_end=True)
                 if float(np.linalg.norm(p_start[:2] - cur[:2])) > 0.001:
                     yield from c._move_cartesian(np.array([p_start[0], p_start[1], z]), rot, 0.0, pos_speed=0.016,
-                                                 max_step=0.035, settle=2, wrist_up=p["wrist_up"])
+                                                 max_step=0.035, settle=2, wrist_up=p["wrist_up"], ignore_held_at_end=True)
             pos0, rot0 = fk_pose(c.q_target)
             n_seg = max(1, int(math.ceil(float(np.linalg.norm(p_end - pos0)) / 0.006)))
             q_prev = c.q_target.copy()
@@ -573,9 +628,12 @@ class PlacementFinisher:
             q = near[0]
             return False, f"perched d_xy={float(np.linalg.norm(q.position[:2] - seat_xy)):.3f} z={float(q.position[2]):.3f} pose={q.pose_hint}"
         # not near the seat: the tracked part (selected the way the controller selects it) found elsewhere = fell out
-        if elsewhere is not None and float(elsewhere.position[1]) < 0.05 + LAYOUT_SHIFT[1] \
-                and float(np.linalg.norm(elsewhere.position[:2] - seat_xy)) < 0.32:
-            return False, f"fell_out at {np.round(elsewhere.position[:2], 3).tolist()}"
+        if elsewhere is not None:
+            if seat_id != "tray" and is_part_in_seat(elsewhere, "tray", scene):
+                return False, f"fell_in_tray at {np.round(elsewhere.position[:2], 3).tolist()}"
+            if float(elsewhere.position[1]) < 0.05 + LAYOUT_SHIFT[1] \
+                    and float(np.linalg.norm(elsewhere.position[:2] - seat_xy)) < 0.32:
+                return False, f"fell_out at {np.round(elsewhere.position[:2], 3).tolist()}"
         if released_ok:
             return True, "aligned_in_seat"
         return False, "unverified_not_seen"

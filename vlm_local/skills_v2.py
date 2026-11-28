@@ -15,8 +15,9 @@ import numpy as np
 from .classical import cell as _cell
 from .classical import detector as D
 from .classical import vision as V
+from .classical.cumotion import make_held_bolt_spec, make_held_nut_spec, make_held_washer_spec
 from .classical.kinematics import (PAD_TIP_NUT_FLAT, PAD_TIP_WASHER, closest_hex_yaw, down_mat, fk_pose,
-                                   nearest_pi_yaw, normalize, site_rot_from_zx, site_rot_from_zy)
+                                   nearest_pi_yaw, normalize, site_rot_from_zx, site_rot_from_zy, wrap_angle)
 from .classical.planner import EMPTY_GRIPPER_THRESH, StepCommand, _min_grip_for_part
 from .classical.scene_interface import FASTENER_GEOM, FIXTURE_BLOCK_TOP_Z, SEAT_LOCAL_GEOM, is_part_in_seat
 from .finisher import (HeldPart, PlacementFinisher, bolt_axis_height_when_lying, bolt_geom, bolt_grasp_d_along,
@@ -181,6 +182,16 @@ class PlacementV2Mixin:
         _, fyaw, _ = self._get_filtered_fixture()
         grasp_yaw = nearest_pi_yaw(_cell.reach_yaw(fyaw), self._cur_ee_yaw())
         rot = down_mat(grasp_yaw)
+        if getattr(self, "cumotion", None) is not None:
+            self._sync_cumotion(exclude_xy=w_xy)
+            w_cands = []
+            for k in range(8):
+                yk = wrap_angle(_cell.reach_yaw(fyaw) + k * (math.pi / 4.0))
+                bonus = 0.05 if abs(wrap_angle(yk - grasp_yaw)) < 0.2 else 0.0
+                w_cands.append((np.array([float(w_xy[0]), float(w_xy[1]), pad_tip]), down_mat(yk), 0.82, 0.24,
+                                {"grasp_yaw": yk, "prior_bonus": bonus}))
+            _, rot, _, _, w_meta = self.cumotion.select_grasp_pose(w_cands, self.q_target)
+            grasp_yaw = float(w_meta["grasp_yaw"])
 
         yield from self._ensure_safe_height(0.25, 0.82)
         yield from self._move_cartesian(np.array([float(w_xy[0]), float(w_xy[1]), 0.24]), rot, 0.82,
@@ -207,6 +218,8 @@ class PlacementV2Mixin:
                                         pos_speed=0.014, max_step=0.036, settle=6, tol=0.006, want_vision=False)
         grasp_ee_z = float(self.proprio["ee_pos"][2])
         yield from self._grip_hold(0.0, steps=16, early_stop=True, want_vision=False)
+        if getattr(self, "cumotion", None) is not None:
+            self._held_spec = make_held_washer_spec(model, pad_tip=pad_tip)
         yield from self._move_cartesian(np.array([float(w_xy[0]), float(w_xy[1]), lift_z]), rot, 0.0,
                                         pos_speed=0.025, settle=2, want_vision=True)
         g_now = float(self.proprio["gripper"])
@@ -412,16 +425,23 @@ class PlacementV2Mixin:
     def _unlean_bolt(self, part, fyaw: float, goal: Any = None) -> Iterator[StepCommand]:
         model = _bolt_model(goal, part)
         g = bolt_geom(model)
-        if g["diameter"] <= 0.017:
+        use_cumo = getattr(self, "cumotion", None) is not None
+        is_standing = getattr(part, "pose_hint", "") == "standing"
+        if g["diameter"] <= 0.017 and not use_cumo:
             yield from super()._unlean_bolt(part, fyaw)
             return
         pos = part.position.copy()
         fy_r = _cell.reach_yaw(fyaw)
         w_out = np.array([math.sin(fy_r), -math.cos(fy_r), 0.0], dtype=np.float64)
-        z_lean = 0.5 * (g["length"] + g["head_height"])
+        if is_standing:
+            z_lean = max(0.028, g["head_height"] + 0.52 * g["length"])
+        elif g["diameter"] <= 0.017:
+            z_lean = 0.028
+        else:
+            z_lean = 0.5 * (g["length"] + g["head_height"])
 
-        # Refine leaning bolt centre with the wrist camera so large M24/M30 bolts are grasped cleanly on the shank
-        yield from self._ensure_safe_height(0.26, 0.62)
+        # Refine leaning/standing bolt centre with the wrist camera so M16/M24/M30 bolts are grasped cleanly on the shank
+        yield from self._ensure_safe_height(0.27, 0.62)
         obs_p = np.array([float(pos[0]), float(pos[1]) - 0.04, 0.28], dtype=np.float64)
         yield from self._move_cartesian(obs_p, down_mat(0.0), 0.62, pos_speed=0.028, settle=3, want_vision=False)
         yield self._emit_hold(0.62, want_vision=False)
@@ -432,28 +452,47 @@ class PlacementV2Mixin:
             for d in dets:
                 if d.kind == "bolt" and d.usable_kpt(0, wcam.width, wcam.height, 0.30):
                     pl = wcam.intersect_z(float(d.kpts_xy[0, 0]), float(d.kpts_xy[0, 1]), z_lean)
-                    if pl is not None and float(np.linalg.norm(pl[:2] - pos[:2])) < 0.07:
+                    if pl is not None and float(np.linalg.norm(pl[:2] - pos[:2])) < 0.075:
                         cands.append((float(np.linalg.norm(pl[:2] - pos[:2])), pl))
             if cands:
                 cands.sort(key=lambda t: t[0])
                 p_ln = cands[0][1]
 
-        axis = normalize(np.array([0.5 * w_out[0], 0.5 * w_out[1], -0.866], dtype=np.float64))
-        x_site = axis
-        z_site = normalize((-w_out) - float(np.dot(-w_out, x_site)) * x_site)
-        y_site = np.cross(z_site, x_site)
-        rot_grasp = np.column_stack([x_site, y_site, z_site])
+        grip_open = 0.56 if g["diameter"] <= 0.017 else 0.62
+        if is_standing and use_cumo:
+            self._sync_cumotion(exclude_xy=p_ln[:2])
+            st_cands = []
+            pref_yaw = math.atan2(-float(w_out[1]), -float(w_out[0]))
+            for k in range(12):
+                yk = wrap_angle(pref_yaw + k * (math.pi / 6.0))
+                z_dir = np.array([math.cos(yk), math.sin(yk), 0.0], dtype=np.float64)
+                r_cand = site_rot_from_zx(z_dir, np.array([0.0, 0.0, -1.0]))
+                pg_cand = np.array([float(p_ln[0]), float(p_ln[1]), z_lean], dtype=np.float64) - 0.128 * z_dir
+                bonus = 0.06 if abs(wrap_angle(yk - pref_yaw)) < 0.35 else 0.0
+                st_cands.append((pg_cand, r_cand, grip_open, max(0.27, z_lean + 0.12), {"z_dir": z_dir, "prior_bonus": bonus}))
+            p_site_grasp, rot_grasp, _, _, st_meta = self.cumotion.select_grasp_pose(st_cands, self.q_target)
+            z_site = st_meta["z_dir"]
+            p_site_pre = p_site_grasp - 0.075 * z_site + np.array([0.0, 0.0, 0.025], dtype=np.float64)
+            q_pre, _, _ = self.cumotion.solve_ik(p_site_pre, rot_grasp, self.q_target, grip_open, wrist_up=True)
+        else:
+            axis = normalize(np.array([0.5 * w_out[0], 0.5 * w_out[1], -0.866], dtype=np.float64))
+            x_site = axis
+            z_site = normalize((-w_out) - float(np.dot(-w_out, x_site)) * x_site)
+            y_site = np.cross(z_site, x_site)
+            rot_grasp = np.column_stack([x_site, y_site, z_site])
+            p_site_grasp = p_ln - 0.005 * axis - (0.129 if g["diameter"] <= 0.017 else 0.126) * z_site
+            p_site_pre = p_site_grasp - 0.080 * z_site + np.array([0.0, 0.0, 0.03], dtype=np.float64)
+            if use_cumo:
+                self._sync_cumotion(exclude_xy=p_ln[:2])
+                q_pre, _, _ = self.cumotion.solve_ik(p_site_pre, rot_grasp, self.q_target, grip_open)
+            else:
+                q_pre = self.ik.solve(p_site_pre, rot_grasp, self.q_target).q
 
-        p_site_grasp = p_ln - 0.005 * axis - 0.126 * z_site
-        p_site_pre = p_site_grasp - 0.080 * z_site + np.array([0.0, 0.0, 0.03], dtype=np.float64)
-        grip_open = 0.62
-
-        q_pre = self.ik.solve(p_site_pre, rot_grasp, self.q_target).q
         yield from self._move_joint(q_pre, grip_open, settle=2)
         yield from self._move_cartesian(p_site_grasp, rot_grasp, grip_open, pos_speed=0.012, settle=3)
         yield from self._grip_hold(0.0, steps=14, early_stop=True)
 
-        p_pull = p_site_grasp - 0.070 * z_site + np.array([0.0, 0.0, 0.095], dtype=np.float64)
+        p_pull = p_site_grasp - (0.045 * z_site if is_standing else 0.070 * z_site) + np.array([0.0, 0.0, 0.095], dtype=np.float64)
         yield from self._move_cartesian(p_pull, rot_grasp, 0.0, pos_speed=0.018, settle=2)
         g_now = float(self.proprio["gripper"])
         if g_now < EMPTY_GRIPPER_THRESH:
@@ -462,14 +501,21 @@ class PlacementV2Mixin:
             yield from self._ensure_safe_height(0.27, 0.62)
             return
 
+        if use_cumo:
+            self._held_spec = make_held_bolt_spec(model, d_along=0.0, z_s_held=0.128, head_along_neg_x=not is_standing)
+
         drop_xy = self._clear_table_spot(exclude_xy=p_ln[:2])
         rot_flat = site_rot_from_zx(np.array([0.0, 0.0, -1.0]), np.array([1.0, 0.0, 0.0]))
-        p_above = np.array([float(drop_xy[0]), float(drop_xy[1]), 0.27], dtype=np.float64)
-        q_above = self.ik.solve(p_above, rot_flat, self.q_target).q
+        p_above = np.array([float(drop_xy[0]), float(drop_xy[1]), 0.29], dtype=np.float64)
+        if use_cumo:
+            self._sync_cumotion(exclude_xy=drop_xy)
+            q_above, _, _ = self.cumotion.solve_ik(p_above, rot_flat, self.q_target, g_now)
+        else:
+            q_above = self.ik.solve(p_above, rot_flat, self.q_target).q
         yield from self._move_joint(q_above, 0.0, settle=2)
 
         p_drop = np.array([float(drop_xy[0]), float(drop_xy[1]), 0.138 + g["lying_radius"]], dtype=np.float64)
-        yield from self._move_cartesian(p_drop, rot_flat, 0.0, pos_speed=0.015, settle=3)
+        yield from self._move_cartesian(p_drop, rot_flat, 0.0, pos_speed=0.015, settle=3, ignore_held_at_end=True)
         yield from self._grip_hold(0.62, steps=10, early_stop=True)
         yield from self._move_cartesian(p_above, rot_flat, 0.62, pos_speed=0.025, settle=2, want_vision=True)
         yield self._emit_hold(0.62, want_vision=True)
@@ -490,7 +536,11 @@ class PlacementV2Mixin:
 
         yield from self._ensure_safe_height(0.26, g_open)
         hover0 = np.array([float(part.position[0]), float(part.position[1]), 0.28], dtype=np.float64)
-        q_h0 = self.ik.solve(hover0, rot_init, self.q_target).q
+        if getattr(self, "cumotion", None) is not None:
+            self._sync_cumotion(exclude_xy=part.position[:2])
+            q_h0, _, _ = self.cumotion.solve_ik(hover0, rot_init, self.q_target, g_open)
+        else:
+            q_h0 = self.ik.solve(hover0, rot_init, self.q_target).q
         yield from self._move_joint(q_h0, g_open, settle=3, want_vision=False)
         yield self._emit_hold(g_open, want_vision=False)
 
@@ -500,9 +550,16 @@ class PlacementV2Mixin:
         if wcam is not None and dets:
             full_len = g["length"] + g["head_height"]
             cands = []
+            standing_seen = False
+            px_thresh = 30.0 if g["diameter"] <= 0.017 else 42.0
             for d in dets:
                 if d.kind != "bolt" or not (d.usable_kpt(1, wcam.width, wcam.height, 0.30) and d.usable_kpt(2, wcam.width, wcam.height, 0.30)):
                     continue
+                px_span = float(np.linalg.norm(d.kpts_xy[1, :2] - d.kpts_xy[2, :2]))
+                p_mid_st = wcam.intersect_z(float(d.kpts_xy[0, 0]), float(d.kpts_xy[0, 1]), 0.5 * full_len)
+                if getattr(self, "cumotion", None) is not None and px_span < px_thresh and p_mid_st is not None:
+                    if float(np.linalg.norm(p_mid_st[:2] - part.position[:2])) < 0.07:
+                        standing_seen = True
                 pk1 = wcam.intersect_z(float(d.kpts_xy[1, 0]), float(d.kpts_xy[1, 1]), 0.5 * g["across_flats"])
                 pk2 = wcam.intersect_z(float(d.kpts_xy[2, 0]), float(d.kpts_xy[2, 1]), 0.5 * g["diameter"])
                 if pk1 is None or pk2 is None:
@@ -519,6 +576,10 @@ class PlacementV2Mixin:
                 if float(np.linalg.norm(vec_xy)) > 1e-4:
                     bpos = mid
                     bax = vec_xy / float(np.linalg.norm(vec_xy))
+            elif standing_seen:
+                self._last_grasp_meta = {"detected_standing": True, "part": part, "model": model}
+                self._log_ev("wrist_detected_standing_bolt", model=model, xy=[round(float(part.position[0]), 4), round(float(part.position[1]), 4)])
+                return
 
         d_along = bolt_grasp_d_along(model)
         retry_offsets = (np.zeros(3), np.array([0.0, 0.0, -0.002]), np.array([0.003, 0.0, -0.002]), np.array([-0.003, 0.003, -0.002]))
@@ -576,6 +637,23 @@ class PlacementV2Mixin:
         g_open = float(np.clip(0.32 + 8.0 * af, 0.58, 0.80))
         hover_z = max(0.25, z_surf + pad_bottom + pad_tip + 0.095)
         grasp_pos = np.array([float(pos[0]), float(pos[1]), z_surf + pad_bottom + pad_tip])
+        if getattr(self, "cumotion", None) is not None:
+            self._sync_cumotion(exclude_xy=pos[:2])
+            nut_cands = []
+            for k in range(6):
+                yk = wrap_angle(float(part.yaw) + k * (math.pi / 3.0))
+                rk = site_rot_from_zy(np.array([0.0, 0.0, -1.0]), np.array([math.cos(yk), math.sin(yk), 0.0]))
+                bonus = 0.05 if abs(wrap_angle(yk - grasp_y_yaw)) < 0.25 else 0.0
+                nut_cands.append(
+                    (
+                        grasp_pos,
+                        rk,
+                        g_open,
+                        hover_z,
+                        {"grasp_y_yaw": yk, "pad_bottom": pad_bottom, "model": model, "g_open": g_open, "prior_bonus": bonus},
+                    )
+                )
+            return self.cumotion.select_grasp_pose(nut_cands, self.q_target)
         return grasp_pos, rot, g_open, hover_z, {"grasp_y_yaw": grasp_y_yaw, "pad_bottom": pad_bottom, "model": model, "g_open": g_open}
 
     # ---------------------------------------------------------------- bolt -> bore (with optional washer under head)
@@ -587,6 +665,7 @@ class PlacementV2Mixin:
         on_washer = getattr(goal, "on_washer_model", None)
         w_th = float(FASTENER_GEOM.get(on_washer, FASTENER_GEOM["washer_m33"])["thickness"]) if on_washer else 0.0
         w_hole = float(FASTENER_GEOM.get(on_washer, FASTENER_GEOM["washer_m33"])["inner_diameter"]) if on_washer else 0.0
+        use_cumo = getattr(self, "cumotion", None) is not None
 
         # If inserting through a pre-placed washer and we haven't calibrated the seat with the wrist camera yet, do so now
         if on_washer and getattr(self, "_wrist_fixture", None) is None:
@@ -610,6 +689,11 @@ class PlacementV2Mixin:
             wfix = getattr(self, "_wrist_fixture", None)
             if wfix is not None:
                 fyaw = float(wfix[1])
+            # A bolt within 38 mm of the 115 mm fixture wall cannot be lying flat (tabletop spawn clearance + half-length
+            # is >= 45 mm) and top-down grasping collides with the fixture wall -> it is leaning against the wall!
+            if use_cumo and part.pose_hint == "lying" and self.scene is not None:
+                if self.scene.fixture_distance(part.position[:2]) < 0.038:
+                    part.pose_hint = "leaning"
             if part.pose_hint in ("leaning", "standing"):
                 yield from self._unlean_bolt(part, fyaw, goal=goal)
                 self.tracker.reset_part()
@@ -623,15 +707,31 @@ class PlacementV2Mixin:
                 yield from self._ensure_safe_height(0.28, 0.60)
                 yield from self._refine_fixture_seat_from_wrist(goal.seat_id, np.asarray(seats0[goal.seat_id], float)[:2], down_mat(0.0))
             model = _bolt_model(goal, part)
-            if on_washer or bolt_geom(model)["diameter"] > 0.020:
+            if on_washer or use_cumo or bolt_geom(model)["diameter"] > 0.020:
                 yield from self._grasp_lying_bolt_wrist_refined(goal, part, model, attempt=attempt)
+                if getattr(self, "_last_grasp_meta", {}).get("detected_standing"):
+                    part.pose_hint = "standing"
+                    yield from self._unlean_bolt(part, fyaw, goal=goal)
+                    self.tracker.reset_part()
+                    yield from self._observe_target(goal, grip=0.55, min_samples=1, max_wait=4)
+                    part = self.tracker.filtered_part()
+                    if part is None:
+                        continue
+                    model = _bolt_model(goal, part)
+                    yield from self._grasp_lying_bolt_wrist_refined(goal, part, model, attempt=attempt)
+                    if getattr(self, "_last_grasp_meta", {}).get("detected_standing"):
+                        continue
             else:
                 yield from self._hover_and_descend_with_nudge_watch(
                     goal, lambda p, s, fy, ry, m=model: self._compute_lying_bolt_grasp(p, s, fy, ry, m), attempt=attempt)
             meta = self._last_grasp_meta
             yield from self._grip_hold(0.0, steps=14, early_stop=True)
+            if use_cumo:
+                meta["grasp_ee_pos"] = self.proprio["ee_pos"].copy()
+                z_sh = float(np.clip(meta["grasp_ee_pos"][2] - bolt_axis_height_when_lying(model), 0.110, 0.136))
+                self._held_spec = make_held_bolt_spec(model, d_along=float(meta["d_along"]), z_s_held=z_sh, head_along_neg_x=True)
             cur_p, cur_r = fk_pose(self.q_target)
-            yield from self._move_cartesian(np.array([cur_p[0], cur_p[1], 0.29 if on_washer else 0.28]), cur_r, 0.0, pos_speed=0.024, settle=2)
+            yield from self._move_cartesian(np.array([cur_p[0], cur_p[1], 0.295 if (on_washer or use_cumo) else 0.28]), cur_r, 0.0, pos_speed=0.024, settle=2)
             if self.proprio["gripper"] < min_grip or self.proprio["gripper"] > 0.65:
                 yield from self._grip_hold(0.55, steps=8, early_stop=True, want_vision=True)
                 continue
@@ -693,6 +793,9 @@ class PlacementV2Mixin:
             meta = self._last_grasp_meta
             g_open = float(meta.get("g_open", 0.75))
             yield from self._grip_hold(0.0, steps=14, early_stop=True)
+            if getattr(self, "cumotion", None) is not None:
+                meta["grasp_ee_pos"] = self.proprio["ee_pos"].copy()
+                self._held_spec = make_held_nut_spec(model, pad_tip=nut_pad_tip(model), nut_pad_bottom=float(meta["pad_bottom"]))
             cur_p, cur_r = fk_pose(self.q_target)
             yield from self._move_cartesian(np.array([cur_p[0], cur_p[1], 0.27]), cur_r, 0.0, pos_speed=0.022, settle=2)
             g_now = float(self.proprio["gripper"])

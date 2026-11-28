@@ -17,3 +17,16 @@ Learned part detector (vlm_local/classical/detector.py, selfcal.py)
   a YOLO11s-pose model fine-tuned from Ultralytics' yolo11s-pose.pt on simulator renders of the two PUBLIC tasks only.
   Ultralytics YOLO code and pretrained weights are licensed under AGPL-3.0; the fine-tuned detector is a derivative and
   is distributed under AGPL-3.0. It is loaded with the `ultralytics` package already present in the judged image.
+
+Collision-aware motion planning scene assets (vlm_local/classical/assets/)
+--------------------------------------------------------------------------
+* vlm_local/classical/assets/robotiq_2f140/2f140.xml and assets/pad.stl: from personalrobotics/geodude_assets
+  (commit f130a8f435ef7780fbc28014805c25cce6acd67b), derived from ROS-Industrial 2F-140 URDF, licensed under
+  BSD-2-Clause (see vlm_local/classical/assets/robotiq_2f140/LICENSE), with the Reality Check participant-kit
+  tendon damping and parallel-pad equality adjustments.
+* vlm_local/classical/assets/robotiq_2f140/assets/{base,base_mount,coupler,driver,follower,spring_link}.stl:
+  from robotiq/robotiq-ros (commit 31c57bbb052063d6b6c3e9602dbc534db1e9831b) / PickNik Robotics, licensed under
+  BSD-3-Clause (see LICENSE-ROBOTIQ-ROS and LICENSE-PICKNIK in that directory).
+* vlm_local/classical/assets/{fixture_v3.json, cell.json} and UR12e kinematic/capsule parameters in
+  vlm_local/classical/cumotion.py: from the public Reality Check participant kit (`engine/rc_engine/assets/`)
+  and Universal Robots ROS 2 Description (`ur_description` 4.4.1, BSD-3-Clause).
