@@ -480,7 +480,7 @@ class PlacementV2Mixin:
             z_site = normalize((-w_out) - float(np.dot(-w_out, x_site)) * x_site)
             y_site = np.cross(z_site, x_site)
             rot_grasp = np.column_stack([x_site, y_site, z_site])
-            p_site_grasp = p_ln - 0.005 * axis - (0.129 if g["diameter"] <= 0.017 else 0.126) * z_site
+            p_site_grasp = p_ln - 0.005 * axis - (0.125 if g["diameter"] <= 0.017 else 0.126) * z_site
             p_site_pre = p_site_grasp - 0.080 * z_site + np.array([0.0, 0.0, 0.03], dtype=np.float64)
             if use_cumo:
                 self._sync_cumotion(exclude_xy=p_ln[:2])

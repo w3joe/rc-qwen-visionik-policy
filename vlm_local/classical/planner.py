@@ -282,11 +282,12 @@ class EpisodeController:
         wrist_up: bool = False,
         want_vision: bool = False,
         ignore_held_at_end: bool = False,
+        allow_contact: bool = False,
     ) -> Iterator[StepCommand]:
         pos_goal = np.asarray(pos_goal, dtype=np.float64)
         rot_goal = np.asarray(rot_goal, dtype=np.float64)
         pos0, rot0 = fk_pose(self.q_target)
-        if self.cumotion is not None:
+        if self.cumotion is not None and not allow_contact:
             self._sync_cumotion(exclude_xy=pos_goal[:2] if grip > 0.25 else None)
             q_seq = self.cumotion.plan_cartesian_waypoints(
                 pos0,
@@ -759,13 +760,23 @@ class EpisodeController:
                 # Since gripper +x was aligned with bolt axis at grasp, aligning +x with tray long axis
                 # (fyaw + pi/2) puts the 78.7 mm bolt lengthwise inside the 222 mm tray!
                 place_yaw = nearest_pi_yaw(fyaw + math.pi / 2.0, cur_yaw)
+            elif self.cumotion is not None and goal.part_kind == "washer":
+                # Align 130 mm wide finger-opening (+y_site) with tray's 222 mm long axis and 27 mm pad width (+x_site)
+                # across the 95 mm tray width so fingers never jam into the 115 mm block face!
+                place_yaw = nearest_pi_yaw(fyaw, cur_yaw)
             else:
                 place_yaw = cur_yaw
 
             place_rot = down_mat(place_yaw)
             above_tray = np.array([float(tray_xyz[0]), float(tray_xyz[1]), lift_z], dtype=np.float64)
             yield from self._move_cartesian(
-                above_tray, place_rot, 0.0, pos_speed=0.028, rot_speed=0.18, settle=2
+                above_tray,
+                place_rot,
+                0.0,
+                pos_speed=0.028,
+                rot_speed=0.18,
+                settle=4 if (self.cumotion is not None and goal.part_kind == "washer") else 2,
+                tol=0.006 if (self.cumotion is not None and goal.part_kind == "washer") else 0.010,
             )
 
             # Re-verify still holding part before lowering
@@ -775,7 +786,7 @@ class EpisodeController:
 
             # 6. Lower gently into tray
             if goal.part_kind == "washer":
-                drop_z = TRAY_FLOOR_Z + 0.006 + PAD_TIP_WASHER
+                drop_z = (0.024 if self.cumotion is not None else (TRAY_FLOOR_Z + 0.006)) + PAD_TIP_WASHER
             elif mode == "standing":
                 drop_z = TRAY_FLOOR_Z + 0.036 + PAD_TIP_BOLT_M30
             elif mode == "leaning":
@@ -1177,8 +1188,8 @@ class EpisodeController:
 
         q_hover = self.ik.solve(p_hover, rot_push, self.q_target).q
         yield from self._move_joint(q_hover, grip_push, settle=2)
-        yield from self._move_cartesian(p_start, rot_push, grip_push, pos_speed=0.020, settle=2)
-        yield from self._move_cartesian(p_end, rot_push, grip_push, pos_speed=0.015, settle=2)
+        yield from self._move_cartesian(p_start, rot_push, grip_push, pos_speed=0.020, settle=2, allow_contact=True)
+        yield from self._move_cartesian(p_end, rot_push, grip_push, pos_speed=0.015, settle=2, allow_contact=True)
         tipped_xy = np.array([pos[0] + 0.025 * best_dir[0], pos[1] + 0.025 * best_dir[1]], dtype=np.float64)
         self._last_tip_xy = tipped_xy.copy()
         yield from self._move_cartesian(
