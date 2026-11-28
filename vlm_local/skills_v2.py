@@ -19,7 +19,7 @@ from .classical.scene_interface import FASTENER_GEOM, SEAT_LOCAL_GEOM
 from .finisher import (HeldPart, PlacementFinisher, bolt_axis_height_when_lying, bolt_grasp_d_along, bolt_pad_tip)
 
 PLACEMENT_V2 = os.environ.get("PLACEMENT_V2", "1") not in ("0", "", "false", "False")
-PLACEMENT_V2_BOLT = os.environ.get("PLACEMENT_V2_BOLT", "0") not in ("0", "", "false", "False")  # default OFF: the v2 bolt path regressed M24 (see the model card); the old bolt skill is used
+PLACEMENT_V2_BOLT = os.environ.get("PLACEMENT_V2_BOLT", "1") not in ("0", "", "false", "False")  # ON since the real-cell port: the old bolt skill never inserts there (no search, no verification)
 MAX_PLACE_TRIES = 2          # one placement + one re-grasp/retry
 
 

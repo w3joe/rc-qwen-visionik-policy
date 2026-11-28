@@ -109,6 +109,7 @@ class FinishResult:
 @dataclass
 class Tolerances:
     depth: float = 0.004            # m, site z above the commanded seated z allowed at release
+    nut_depth: float = 0.0065       # m, nuts: still >= 6 mm inside the 13-15 mm pocket, which a hex only reaches flats-aligned
     tilt: float = math.radians(3.5) # rad, bolt-axis tilt from vertical
     yaw: float = math.radians(4.0)  # rad, nut flat yaw vs the hex
     xy_floor: float = 0.0025        # m, minimum xy tolerance (the funnel / clearance centres the part)
@@ -316,7 +317,7 @@ class PlacementFinisher:
                         break
                 # blocked in the final band (tip on the rim, head on the chamfer): the lag-based stall test cannot fire
                 # there, so a depth shortfall after settling counts as a stall too
-                if float(c.proprio["ee_pos"][2] - p_end[2]) <= self.tol.depth:
+                if float(c.proprio["ee_pos"][2] - p_end[2]) <= (self.tol.nut_depth if p["kind"] == "nut" else self.tol.depth):
                     p["last_offset"] = (ox, oy, dyaw)
                     return
                 p["blocked_at"] = float(c.proprio["ee_pos"][2] - p_end[2])
@@ -348,7 +349,7 @@ class PlacementFinisher:
             out["yaw_err"] = yaw_err
             # A hex nut only reaches depth in a hex pocket with its flats aligned, so depth is the alignment proof;
             # the pads' yaw differs from the nut's whenever the nut turned in the grip (the yaw search found the drop).
-            dropped = off is not None and depth_err <= self.tol.depth
+            dropped = off is not None and depth_err <= self.tol.nut_depth
             out["ok"] = bool(dropped and (yaw_err <= self.tol.yaw or abs(off[2]) > 1e-9 or os.environ.get("RC_NUT_DEPTH_GATE", "1") == "1")
                              and xy_err <= p["xy_tol"] + 0.004)
         return out
