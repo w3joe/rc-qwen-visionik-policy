@@ -243,12 +243,10 @@ class PlacementFinisher:
         w_hole = float(getattr(held, "washer_hole", 0.0))
         w_play = max(0.0015, 0.5 * (w_hole - g["diameter"])) if w_hole > g["diameter"] else 0.002
         s_tr_z = max(0.275, float(s_pre[2]) + 0.035)
-        tip_contact_z = float(support_top_z - g["tip_x"] - off[2])
         return {
             "kind": "bolt", "rot": rot, "s_pre": s_pre, "s_end": s_ins, "wrist_up": True, "grip": 0.0,
             "s_transit": np.array([s_pre[0], s_pre[1], s_tr_z]), "g_release": 0.65,
-            "clearance": clearance, "chamfer": float(sg["chamfer"]), "stall_lag": 0.0046, "stall_margin": 0.001,
-            "stall_ceiling": max(0.010, tip_contact_z - s_ins_z - 0.002), "stall_steps": 4,
+            "clearance": clearance, "chamfer": float(sg["chamfer"]), "stall_lag": 0.006, "stall_margin": 0.004,
             "seat_xyz": seat_xyz, "fyaw": fyaw, "pad_tip": pad_tip,
             "on_washer": w_th > 0.0, "washer_play": w_play,
             "xy_tol": max(self.tol.xy_floor, 0.5 * clearance + 0.001),
@@ -388,7 +386,7 @@ class PlacementFinisher:
         depth_tol = float(p.get("nut_depth_tol", self.tol.nut_depth)) if p["kind"] == "nut" else self.tol.depth
         stall_req = int(p.get("stall_steps", 6))
         stall_ceil = float(p.get("stall_ceiling", 1.0))
-        desc_step = 0.016
+        desc_step = 0.016 if p["kind"] == "nut" else 0.030
         best_err_seen = float(p.get("best_depth_err", 1e9))
 
         for idx, (ox, oy, dyaw) in enumerate(trials):
@@ -430,16 +428,14 @@ class PlacementFinisher:
                 if stalled:
                     break
             if not stalled:
-                n_settle = 8 if p["kind"] == "nut" else 10
-                settle_tol = 0.008 if p["kind"] == "nut" else 0.004
-                for settle_i in range(n_settle):
-                    if settle_i >= 4:
+                for settle_i in range(8):
+                    if p["kind"] == "nut" and settle_i >= 4:
                         cmd_p, _ = fk_pose(c.q_target)
                         if float(c.proprio["ee_pos"][2] - cmd_p[2]) > p["stall_lag"]:
                             stalled = True
                             break
                     yield c._emit_toward(q_prev, 0.0, max_step=0.020 if p["kind"] == "nut" else 0.025, want_vision=False)
-                    if float(np.max(np.abs(c.proprio["joint_pos"] - q_prev))) < settle_tol and \
+                    if float(np.max(np.abs(c.proprio["joint_pos"] - q_prev))) < 0.006 and \
                             float(np.max(np.abs(c.proprio["joint_vel"]))) < 0.04:
                         break
             cur_depth_err = float(c.proprio["ee_pos"][2] - p_end[2])

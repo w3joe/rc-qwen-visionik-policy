@@ -486,11 +486,10 @@ class PlacementV2Mixin:
         else:
             ax_xy = ax_xy / float(np.linalg.norm(ax_xy))
         rot_init = site_rot_from_zx(np.array([0.0, 0.0, -1.0]), -ax_xy)
-        g_open = 0.64 if g["diameter"] > 0.020 else 0.56
+        g_open = 0.55 if g["diameter"] > 0.020 else 0.50
 
         yield from self._ensure_safe_height(0.26, g_open)
-        x_dir = rot_init[:2, 0]
-        hover0 = np.array([float(part.position[0] + 0.035 * x_dir[0]), float(part.position[1] + 0.035 * x_dir[1]), 0.28], dtype=np.float64)
+        hover0 = np.array([float(part.position[0]), float(part.position[1]), 0.28], dtype=np.float64)
         q_h0 = self.ik.solve(hover0, rot_init, self.q_target).q
         yield from self._move_joint(q_h0, g_open, settle=3, want_vision=False)
         yield self._emit_hold(g_open, want_vision=False)
@@ -532,7 +531,7 @@ class PlacementV2Mixin:
                 bpos = center_cands[0][2]
 
         d_along = bolt_grasp_d_along(model)
-        retry_offsets = (np.zeros(3), np.array([0.0, 0.0, -0.002]), np.array([0.005, -0.004, -0.002]), np.array([-0.005, 0.004, -0.002]))
+        retry_offsets = (np.zeros(3), np.array([0.0, 0.0, -0.002]), np.array([0.003, 0.0, -0.002]), np.array([-0.003, 0.003, -0.002]))
         p_grasp = bpos + d_along * bax + retry_offsets[attempt % len(retry_offsets)]
         rot_grasp = site_rot_from_zx(np.array([0.0, 0.0, -1.0]), -bax)
         z_grasp = max(0.002, g["lying_radius"] - 0.008) + bolt_pad_tip(model) + float(retry_offsets[attempt % len(retry_offsets)][2])
