@@ -264,21 +264,20 @@ class PlacementFinisher:
             yield from c._move_cartesian(p["s_pre"], p["rot"], 0.0, pos_speed=0.016, settle=3, wrist_up=True)
         else:
             yield from c._move_cartesian(p["s_transit"], p["rot"], 0.0, pos_speed=0.025, rot_speed=0.16, settle=2)
-            # Refresh seat xy and fixture yaw from the overhead wrist camera before the held nut occludes the pocket
+            # Refresh seat xy and fixture yaw from the robust multi-frame median (now including the overhead s_transit view)
             yield c._emit_hold(0.0, want_vision=True)
             yield c._emit_hold(0.0, want_vision=False)
-            sc = c.scene
+            seats_med, f_yaw, _ = c._get_filtered_fixture()
             sid = p.get("seat_id")
-            if sc is not None and sid in sc.seats and float(sc.fixture_confidence) >= 0.55:
-                f_xyz = np.asarray(sc.seats[sid], float)
-                f_yaw = float(sc.fixture_yaw)
+            if sid in seats_med:
+                f_xyz = np.asarray(seats_med[sid], float)
                 if float(np.linalg.norm(f_xyz[:2] - p["seat_xyz"][:2])) < 0.035 and abs(wrap_angle(f_yaw - p["fyaw"])) < math.radians(15.0):
                     shift_xy = f_xyz[:2] - p["seat_xyz"][:2]
                     p["seat_xyz"] = f_xyz
                     p["s_pre"][:2] = p["s_pre"][:2] + shift_xy
                     p["s_end"][:2] = p["s_end"][:2] + shift_xy
-                    p["fyaw"] = f_yaw
-                    p["flat_normal_yaw"] = math.pi / 2.0 + f_yaw
+                    p["fyaw"] = float(f_yaw)
+                    p["flat_normal_yaw"] = math.pi / 2.0 + float(f_yaw)
                     p["des_y_yaw"] = closest_hex_yaw(p["des_y_yaw"], p["flat_normal_yaw"])
                     p["rot"] = site_rot_from_zy(
                         np.array([0.0, 0.0, -1.0]),
