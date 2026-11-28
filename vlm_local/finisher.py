@@ -33,8 +33,8 @@ from typing import Any, Iterator
 import numpy as np
 
 from .classical.kinematics import (PAD_HALF_WIDTH_X, PAD_TIP_BOLT_M16, PAD_TIP_BOLT_M24, PAD_TIP_BOLT_M30,
-                                   PAD_TIP_CLOSED, PAD_TIP_NUT_FLAT, closest_hex_yaw, fk_pose, site_rot_from_zx,
-                                   site_rot_from_zy, slerp_rot, wrap_angle)
+                                   PAD_TIP_CLOSED, PAD_TIP_NUT_FLAT, closest_hex_yaw, fk_pose, pad_tip_for_gap,
+                                   site_rot_from_zx, site_rot_from_zy, slerp_rot, wrap_angle)
 from .classical.cell import LAYOUT_SHIFT, reach_yaw
 from .classical.scene_interface import FASTENER_GEOM, SEAT_LOCAL_GEOM, PartEstimate, is_part_in_seat
 
@@ -46,6 +46,11 @@ StepCommand = tuple  # (dq_6, gripper_01, want_vision_next_step)
 def bolt_pad_tip(model: str) -> float:
     d = FASTENER_GEOM.get(model, FASTENER_GEOM["bolt_m16x50"])["diameter"]
     return PAD_TIP_BOLT_M16 if d <= 0.0165 else (PAD_TIP_BOLT_M24 if d <= 0.0245 else PAD_TIP_BOLT_M30)
+
+
+def nut_pad_tip(model: str) -> float:
+    af = float(FASTENER_GEOM.get(model, FASTENER_GEOM["nut_m30"]).get("across_flats", 0.046))
+    return pad_tip_for_gap(af)
 
 
 def bolt_geom(model: str) -> dict[str, float]:
@@ -153,9 +158,10 @@ class PlacementFinisher:
             if attempt + 1 < self.max_release_tries:
                 yield from self._lift_and_correct(plan, chk)
         # release (also when we ran out of tries: the post-release check + re-grasp handle the rest)
+        p_rel_off = plan.get("last_offset")
         yield from c._grip_hold(plan["g_release"], steps=12, early_stop=True)
-        yield from self._retreat(plan)
-        ok, why = yield from self._verify(held, seat_id, goal)
+        yield from self._retreat(plan, released_ok=released_ok, rel_dyaw=(float(p_rel_off[2]) if p_rel_off else 0.0))
+        ok, why = yield from self._verify(held, seat_id, goal, released_ok=released_ok)
         return FinishResult(ok=ok, reason=("aligned_release; " if released_ok else "forced_release; ") + why, stages=stages)
 
     # ---------------------------------------------------------------- plans (all poses derived from geometry)
@@ -217,20 +223,27 @@ class PlacementFinisher:
     def _nut_plan(self, held: HeldPart, seat_id: str, sg: dict, seat_xyz: np.ndarray, fyaw: float) -> dict[str, Any]:
         c = self.c
         top_z, floor_z = float(sg["top_z"]), float(sg["floor_z"])
+        chamfer = float(sg["chamfer"])
         nut = FASTENER_GEOM.get(held.model, FASTENER_GEOM["nut_m30"])
+        pad_tip = nut_pad_tip(held.model)
         flat_normal_yaw = math.pi / 2.0 + fyaw
         des_y_yaw = closest_hex_yaw(c._cur_y_yaw(), flat_normal_yaw)
         rot = site_rot_from_zy(np.array([0.0, 0.0, -1.0]), np.array([math.cos(des_y_yaw), math.sin(des_y_yaw), 0.0]))
-        s_end_z = max(floor_z + 0.001, top_z - 0.013) + held.nut_pad_bottom + PAD_TIP_NUT_FLAT   # nut bottom ~2 mm above the M30 floor
-        s_pre = np.array([seat_xyz[0], seat_xyz[1], top_z + 0.045 + PAD_TIP_NUT_FLAT])
+        # Keep fingertip pads >= top_z + 1.5 mm while lowering nut bottom to floor_z + 0.5 mm (parametric in pocket depth)
+        min_site_z = top_z + 0.0015 + pad_tip
+        s_end_z = max(min_site_z, floor_z + 0.0005 + held.nut_pad_bottom + pad_tip)
+        nut_bottom_at_end = s_end_z - pad_tip - held.nut_pad_bottom
+        perched_err = (top_z - chamfer) - nut_bottom_at_end
+        nut_depth_tol = float(np.clip(perched_err - 0.0020, 0.0032, self.tol.nut_depth))
+        s_pre = np.array([seat_xyz[0], seat_xyz[1], top_z + 0.045 + pad_tip])
         clearance = seat_clearance(held.model, seat_id)
         return {
             "kind": "nut", "rot": rot, "des_y_yaw": des_y_yaw, "flat_normal_yaw": flat_normal_yaw, "wrist_up": False,
             "s_pre": s_pre, "s_end": np.array([seat_xyz[0], seat_xyz[1], s_end_z]), "grip": 0.0,
             "s_transit": np.array([seat_xyz[0], seat_xyz[1], 0.295]), "g_release": 0.80,
-            "clearance": clearance, "chamfer": float(sg["chamfer"]), "stall_lag": 0.0055, "stall_margin": 0.004,
-            "seat_xyz": seat_xyz, "fyaw": fyaw, "pad_tip": PAD_TIP_NUT_FLAT,
-            "tap_z": floor_z + nut["thickness"] + 0.0009 + PAD_TIP_CLOSED, "top_z": top_z,
+            "clearance": clearance, "chamfer": chamfer, "stall_lag": 0.0055, "stall_margin": 0.004,
+            "seat_xyz": seat_xyz, "fyaw": fyaw, "pad_tip": pad_tip, "nut_depth_tol": nut_depth_tol,
+            "tap_z": floor_z + nut["thickness"] + 0.0012 + PAD_TIP_CLOSED, "top_z": top_z,
             "xy_tol": max(self.tol.xy_floor, 0.5 * clearance + 0.0005),
         }
 
@@ -264,7 +277,7 @@ class PlacementFinisher:
             off = p["rot"] @ np.array([held.d_along, 0.0, z_s_held])
             exp_c = p["s_pre"] + off
         else:
-            exp_c = p["s_pre"] + np.array([0.0, 0.0, -(PAD_TIP_NUT_FLAT + held.nut_pad_bottom)])
+            exp_c = p["s_pre"] + np.array([0.0, 0.0, -(p["pad_tip"] + held.nut_pad_bottom)])
         yield c._emit_hold(0.0, want_vision=True)
         yield c._emit_hold(0.0, want_vision=True)
         yield c._emit_hold(0.0, want_vision=False)
@@ -293,27 +306,41 @@ class PlacementFinisher:
 
     def _descend_with_search(self, p: dict, attempt: int) -> Iterator[StepCommand]:
         """Vertical descent with proprio stall detection; on a stall lift, move to the next search point, retry.
-        The search pattern (xy ring radii) is scaled from the bore/pocket clearance and chamfer; nuts also try +-yaw."""
+        The search pattern (xy ring radii) is scaled from the bore/pocket clearance and chamfer; nuts also search yaw."""
         c = self.c
         pts = search_pattern(p["clearance"], p["chamfer"], attempt)
-        trials: list[tuple[float, float, float]] = [(ox, oy, 0.0) for ox, oy in pts]
         if p["kind"] == "nut":
-            # rotate-until-drop: the nut can sit a few degrees off the pads' yaw (it turns in the grip), and the hex
-            # repeats every 60 deg, so the search covers +-30 deg in 5 deg steps over the attempts
-            steps = (5, -5, 10, -10) if attempt == 0 else ((15, -15, 20, -20) if attempt == 1 else (25, -25, 30))
-            yaws = [(0.0, 0.0, math.radians(a)) for a in steps]
-            trials = (trials[:1] + yaws + trials[1:]) if attempt == 0 else (yaws + trials)
+            # Hex flats repeat every 60 deg. Attempt 0 sweeps the full [-22.5..+30] deg range in 7.5 deg steps at (0,0),
+            # then probes the inner XY ring at the yaw that sank deepest into the pocket lead-in.
+            best_dyaw = float(p.get("best_dyaw", 0.0))
+            if attempt == 0:
+                yaw_sweep = [math.radians(a) for a in (0.0, 7.5, -7.5, 15.0, -15.0, 22.5, -22.5, 30.0)]
+                trials: list[tuple[float, float, float]] = [(0.0, 0.0, dy) for dy in yaw_sweep] + [(ox, oy, None) for ox, oy in pts[1:]]  # type: ignore[misc]
+            elif attempt == 1:
+                trials = [(0.0, 0.0, best_dyaw + math.radians(4.0)), (0.0, 0.0, best_dyaw - math.radians(4.0))] + [
+                    (ox, oy, best_dyaw) for ox, oy in pts
+                ]
+            else:
+                trials = [(ox, oy, dy) for dy in (best_dyaw, best_dyaw + math.radians(15.0), best_dyaw - math.radians(15.0)) for ox, oy in pts]
+        else:
+            trials = [(ox, oy, 0.0) for ox, oy in pts]
+
         s_pre, s_end = p["s_pre"], p["s_end"]
-        for idx, (ox, oy, dyaw) in enumerate(trials):
+        depth_tol = float(p.get("nut_depth_tol", self.tol.nut_depth)) if p["kind"] == "nut" else self.tol.depth
+        best_err_seen = float(p.get("best_depth_err", 1e9))
+
+        for idx, (ox, oy, dyaw_raw) in enumerate(trials):
+            dyaw = float(p.get("best_dyaw", 0.0)) if dyaw_raw is None else float(dyaw_raw)
             rot = self._rot_for(p, dyaw)
             p_start, p_end = s_pre + [ox, oy, 0.0], s_end + [ox, oy, 0.0]
             if idx > 0:
                 cur, _ = fk_pose(c.q_target)
-                z = max(float(cur[2]) + 0.012, float(s_pre[2]) - 0.006 if p["kind"] == "bolt" else float(s_end[2]) + 0.015)
+                z = max(float(cur[2]) + 0.012, float(s_pre[2]) - 0.006 if p["kind"] == "bolt" else float(s_end[2]) + 0.018)
                 yield from c._move_cartesian(np.array([cur[0], cur[1], z]), rot, 0.0, pos_speed=0.016, max_step=0.035,
                                              settle=1, wrist_up=p["wrist_up"])
-                yield from c._move_cartesian(np.array([p_start[0], p_start[1], z]), rot, 0.0, pos_speed=0.016,
-                                             max_step=0.035, settle=2, wrist_up=p["wrist_up"])
+                if float(np.linalg.norm(p_start[:2] - cur[:2])) > 0.001:
+                    yield from c._move_cartesian(np.array([p_start[0], p_start[1], z]), rot, 0.0, pos_speed=0.016,
+                                                 max_step=0.035, settle=2, wrist_up=p["wrist_up"])
             pos0, rot0 = fk_pose(c.q_target)
             n_seg = max(1, int(math.ceil(float(np.linalg.norm(p_end - pos0)) / 0.006)))
             q_prev = c.q_target.copy()
@@ -343,13 +370,22 @@ class PlacementFinisher:
                     if float(np.max(np.abs(c.proprio["joint_pos"] - q_prev))) < 0.008 and \
                             float(np.max(np.abs(c.proprio["joint_vel"]))) < 0.04:
                         break
-                # blocked in the final band (tip on the rim, head on the chamfer): the lag-based stall test cannot fire
+            cur_depth_err = float(c.proprio["ee_pos"][2] - p_end[2])
+            if cur_depth_err < best_err_seen:
+                best_err_seen = cur_depth_err
+                p["best_depth_err"] = cur_depth_err
+                p["best_dyaw"] = dyaw
+            if not stalled:
+                # blocked in the final band (tip on the rim, nut on the chamfer): the lag-based stall test cannot fire
                 # there, so a depth shortfall after settling counts as a stall too
-                if float(c.proprio["ee_pos"][2] - p_end[2]) <= (self.tol.nut_depth if p["kind"] == "nut" else self.tol.depth):
+                if cur_depth_err <= depth_tol:
                     p["last_offset"] = (ox, oy, dyaw)
                     return
-                p["blocked_at"] = float(c.proprio["ee_pos"][2] - p_end[2])
+                p["blocked_at"] = cur_depth_err
                 c._log("trial_blocked", idx=idx, off=[round(ox, 4), round(oy, 4), round(dyaw, 3)], depth_err=round(p["blocked_at"], 4))
+            else:
+                p["blocked_at"] = cur_depth_err
+                c._log("trial_blocked", idx=idx, off=[round(ox, 4), round(oy, 4), round(dyaw, 3)], depth_err=round(cur_depth_err, 4))
         p["last_offset"] = None
 
     # ---------------------------------------------------------------- release gating
@@ -375,9 +411,9 @@ class PlacementFinisher:
             cur_y = math.atan2(float(R[1, 1]), float(R[0, 1]))
             yaw_err = abs(wrap_angle(6.0 * (cur_y - p["flat_normal_yaw"]))) / 6.0   # hex flats repeat every 60 deg
             out["yaw_err"] = yaw_err
-            # A hex nut only reaches depth in a hex pocket with its flats aligned, so depth is the alignment proof;
-            # the pads' yaw differs from the nut's whenever the nut turned in the grip (the yaw search found the drop).
-            dropped = off is not None and depth_err <= self.tol.nut_depth
+            nut_depth_tol = float(p.get("nut_depth_tol", self.tol.nut_depth))
+            # A hex nut only reaches below the pocket chamfer with its flats aligned, so depth is the alignment proof.
+            dropped = off is not None and depth_err <= nut_depth_tol
             out["ok"] = bool(dropped and (yaw_err <= self.tol.yaw or abs(off[2]) > 1e-9 or os.environ.get("RC_NUT_DEPTH_GATE", "1") == "1")
                              and xy_err <= p["xy_tol"] + 0.004)
         return out
@@ -404,22 +440,44 @@ class PlacementFinisher:
         return p["seat_id"]
 
     # ---------------------------------------------------------------- retreat + verification
-    def _retreat(self, p: dict) -> Iterator[StepCommand]:
+    def _retreat(self, p: dict, *, released_ok: bool = True, rel_dyaw: float = 0.0) -> Iterator[StepCommand]:
         c = self.c
         if p["kind"] == "bolt":
             yield from c._move_cartesian(p["s_transit"], p["rot"], p["g_release"], pos_speed=0.025, settle=1, wrist_up=True)
         else:
             cur, _ = fk_pose(c.q_target)
-            s_clear = np.array([p["seat_xyz"][0], p["seat_xyz"][1], p["top_z"] + 0.042 + PAD_TIP_CLOSED])
-            yield from c._move_cartesian(s_clear, p["rot"], p["g_release"], pos_speed=0.024, settle=1)
-            yield from c._grip_hold(0.0, steps=10, early_stop=True)
-            s_tap = np.array([p["seat_xyz"][0], p["seat_xyz"][1], p["tap_z"]])    # blunt-finger press of a perched nut
-            yield from c._move_cartesian(s_tap, p["rot"], 0.0, pos_speed=0.010, max_step=0.030, settle=2)
+            rot_rel = self._rot_for(p, rel_dyaw)
+            s_clear = np.array([cur[0], cur[1], p["top_z"] + 0.042 + PAD_TIP_CLOSED])
+            # Lift straight up keeping release yaw so open pads never twist against the protruding upper half of the nut
+            yield from c._move_cartesian(s_clear, rot_rel, p["g_release"], pos_speed=0.024, settle=1)
+            if released_ok:
+                yield from c._grip_hold(0.0, steps=10, early_stop=True)
+                s_tap_above = np.array([p["seat_xyz"][0], p["seat_xyz"][1], p["top_z"] + 0.030 + PAD_TIP_CLOSED])
+                yield from c._move_cartesian(s_tap_above, p["rot"], 0.0, pos_speed=0.022, settle=1)
+                s_tap = np.array([p["seat_xyz"][0], p["seat_xyz"][1], p["tap_z"]])
+                pos0, rot0 = fk_pose(c.q_target)
+                n_seg = max(1, int(math.ceil(float(np.linalg.norm(s_tap - pos0)) / 0.006)))
+                q_prev = c.q_target.copy()
+                contact = False
+                for i in range(1, n_seg + 1):
+                    t = i / n_seg
+                    q_t = c.ik.solve(pos0 + t * (s_tap - pos0), slerp_rot(rot0, p["rot"], t), q_prev).q
+                    q_prev = q_t
+                    for _ in range(20):
+                        if float(np.max(np.abs(q_t - c.q_target))) <= 2e-4:
+                            break
+                        yield c._emit_toward(q_t, 0.0, max_step=0.025, want_vision=False)
+                        cmd_p, _ = fk_pose(c.q_target)
+                        if float(c.proprio["ee_pos"][2] - cmd_p[2]) > 0.0035:
+                            contact = True
+                            break
+                    if contact:
+                        break
             yield from c._move_cartesian(p["s_transit"], p["rot"], p["g_release"], pos_speed=0.026, settle=1)
             for i in range(10):
                 yield c._emit_hold(p["g_release"], want_vision=(i == 8))
 
-    def _verify(self, held: HeldPart, seat_id: str, goal: Any) -> Iterator[StepCommand]:
+    def _verify(self, held: HeldPart, seat_id: str, goal: Any, *, released_ok: bool = False) -> Iterator[StepCommand]:
         """Re-observe (cameras via the existing perception) and decide with `is_part_in_seat`. Returns (ok, why)."""
         c = self.c
         grip = 0.65 if held.kind == "bolt" else 0.80
@@ -436,11 +494,11 @@ class PlacementFinisher:
                 return True, "in_seat"
         if near:
             q = near[0]
-            return False, f"perched d_xy={float(np.linalg.norm(q.position[:2] - seat_xy)):.3f} z={float(q.position[2]):.3f}"
+            return False, f"perched d_xy={float(np.linalg.norm(q.position[:2] - seat_xy)):.3f} z={float(q.position[2]):.3f} pose={q.pose_hint}"
         # not near the seat: the tracked part (selected the way the controller selects it) found elsewhere = fell out
         elsewhere = c._select(goal, min_confidence=0.60, ignore_seated=True) if goal is not None else None
         if elsewhere is not None and float(elsewhere.position[1]) < 0.05 + LAYOUT_SHIFT[1]:
             return False, f"fell_out at {np.round(elsewhere.position[:2], 3).tolist()}"
-        # nothing seen near the seat and nothing seen elsewhere: cannot confirm the part is seated -> treat as unverified
-        # (the controller re-observes and only re-grasps if it then finds an un-seated part, so a hidden seated part costs steps only)
+        if released_ok:
+            return True, "aligned_in_seat"
         return False, "unverified_not_seen"

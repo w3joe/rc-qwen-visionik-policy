@@ -61,9 +61,12 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
             pool = [p for p in self.scene.parts if p.kind == goal.part_kind and p.confidence >= floor
                     and not (ignore_seated and goal.seat_id and is_part_in_seat(p, goal.seat_id, self.scene))]
             same = [p for p in pool if p.raw_kind == goal.part_model]
-            if goal.part_kind == "bolt" and same:
+            if goal.part_kind in ("bolt", "nut") and same:
                 pool, radius = same, 0.5
             else:
+                if goal.part_kind == "nut" and goal.part_model in FASTENER_GEOM:
+                    # Never substitute a confidently-detected nut of a different kit size (e.g. decoy M30 or M36 for M24)
+                    pool = [p for p in pool if p.raw_kind == goal.part_model or (not p.raw_kind.startswith("nut_m")) or p.confidence < 0.45]
                 radius = TRACK_RADIUS
             best_d = radius
             for p in pool:
@@ -79,7 +82,7 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
     # ------------------------------------------------------------------ grasp for any part kind
     def _grasp_fn(self, goal):
         if goal.part_kind == "nut":
-            return self._compute_flat_nut_grasp
+            return lambda p, s, fy, ry: self._compute_flat_nut_grasp_v2(p, s, fy, ry, goal.part_model, goal.seat_id)
         return lambda p, s, fy, ry: self._compute_tray_grasp(goal, p, s, fy, ry)
 
     def _surface_z(self, goal, seats) -> float:
