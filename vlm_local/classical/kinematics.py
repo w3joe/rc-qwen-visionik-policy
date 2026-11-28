@@ -11,12 +11,19 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .cell import BASE_WORLD
+from .cell import (
+    BASE_WORLD,
+    REAL_BRACKET_YAW_RAD,
+    WRIST_CAMERA_POS_REAL,
+    WRIST_CAMERA_XYAXES_REAL,
+    is_real_cell,
+)
 
 NUM_JOINTS = 6
 
-# Home joint configuration (rad) from embodiment.py / docs/api.md
+# Home joint configuration (rad) from embodiment.py (sim ad65e2e) and real Spark START_POSE (2026-11-28)
 HOME_Q = np.array([-0.2055, -1.1091, 1.6007, -1.9708, -1.5708, 1.5708], dtype=np.float64)
+SPARK_HOME_Q = np.array([-2.932028, -1.278959, -2.076159, -1.365526, 1.570474, 0.615173307], dtype=np.float64)
 
 # Protocol limits (docs/api.md, RULES.md)
 PROTOCOL_JOINT_LO = np.array(
@@ -246,10 +253,21 @@ _R_TOOL0 = _R_FLANGE @ quat_to_mat(np.array([0.5, 0.5, 0.5, 0.5]))
 _P_SITE_IN_TOOL0 = np.array([0.0, 0.0, TOOL0_TO_SITE_Z], dtype=np.float64)
 _R_SITE_IN_TOOL0 = quat_to_mat(np.array([0.7071, 0.0, 0.0, -0.7071]))
 
-# Wrist camera orientation in tool0 from WRIST_CAMERA_XYAXES
+# Wrist camera orientation in tool0 from WRIST_CAMERA_XYAXES (sim) and PnP-calibrated real cell
 _CAM_X = WRIST_CAMERA_XYAXES[:3]
 _CAM_Y = WRIST_CAMERA_XYAXES[3:6]
 _R_WRIST_CAM_IN_TOOL0 = np.column_stack([_CAM_X, _CAM_Y, np.cross(_CAM_X, _CAM_Y)])
+
+_R_REAL_BRACKET = _rot_z(REAL_BRACKET_YAW_RAD)
+_R_SITE_IN_TOOL0_REAL = _R_REAL_BRACKET @ _R_SITE_IN_TOOL0
+_CAMERA_HOUSING_POS_REAL = _R_REAL_BRACKET @ CAMERA_HOUSING_POS
+_WRIST_CAM_POS_REAL = np.asarray(WRIST_CAMERA_POS_REAL, dtype=np.float64)
+_WCX_R = np.asarray(WRIST_CAMERA_XYAXES_REAL[:3], dtype=np.float64)
+_WCX_R /= np.linalg.norm(_WCX_R)
+_WCY_R = np.asarray(WRIST_CAMERA_XYAXES_REAL[3:6], dtype=np.float64)
+_WCY_R = _WCY_R - float(np.dot(_WCX_R, _WCY_R)) * _WCX_R
+_WCY_R /= np.linalg.norm(_WCY_R)
+_R_WRIST_CAM_IN_TOOL0_REAL = np.column_stack([_WCX_R, _WCY_R, np.cross(_WCX_R, _WCY_R)])
 
 
 @dataclass
@@ -266,7 +284,7 @@ class FKResult:
     camera_housing_pos: np.ndarray  # (3,) wrist camera collision box center
 
 
-def forward_kinematics(q: np.ndarray) -> FKResult:
+def forward_kinematics(q: np.ndarray, *, real_cell: bool | None = None) -> FKResult:
     """Compute exact UR12e + 2F-140 forward kinematics for joint angles q (6,)."""
     q = np.asarray(q, dtype=np.float64)
     p = BASE_WORLD.copy()  # robot base in the world (table top z = 0)
@@ -284,11 +302,12 @@ def forward_kinematics(q: np.ndarray) -> FKResult:
         j_axes[i] = R[:, 2]
         link_rots.append(R.copy())
 
+    use_real = is_real_cell() if real_cell is None else bool(real_cell)
     tool0_pos = p
     tool0_rot = R @ _R_TOOL0
     ee_pos = tool0_pos + tool0_rot @ _P_SITE_IN_TOOL0
-    ee_rot = tool0_rot @ _R_SITE_IN_TOOL0
-    cam_pos = tool0_pos + tool0_rot @ CAMERA_HOUSING_POS
+    ee_rot = tool0_rot @ (_R_SITE_IN_TOOL0_REAL if use_real else _R_SITE_IN_TOOL0)
+    cam_pos = tool0_pos + tool0_rot @ (_CAMERA_HOUSING_POS_REAL if use_real else CAMERA_HOUSING_POS)
 
     return FKResult(
         ee_pos=ee_pos,
@@ -308,14 +327,25 @@ def fk_pose(q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return res.ee_pos, res.ee_rot
 
 
-def wrist_camera_pose(q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return (cam_pos_world, cam_rot_world) for the Gemini 336 wrist camera.
+def fk_pose_sim(q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return simulator-convention (ee_pos, ee_rot) regardless of `RC_REAL_CELL`."""
+    res = forward_kinematics(q, real_cell=False)
+    return res.ee_pos, res.ee_rot
+
+
+def wrist_camera_pose(q: np.ndarray, *, real_cell: bool | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Return (cam_pos_world, cam_rot_world) for the wrist camera.
 
     Columns of cam_rot_world are OpenGL/MuJoCo camera axes: +X right, +Y up, -Z forward.
     """
-    res = forward_kinematics(q)
-    pos = res.tool0_pos + res.tool0_rot @ WRIST_CAMERA_POS
-    rot = res.tool0_rot @ _R_WRIST_CAM_IN_TOOL0
+    use_real = is_real_cell() if real_cell is None else bool(real_cell)
+    res = forward_kinematics(q, real_cell=use_real)
+    if use_real:
+        pos = res.tool0_pos + res.tool0_rot @ _WRIST_CAM_POS_REAL
+        rot = res.tool0_rot @ _R_WRIST_CAM_IN_TOOL0_REAL
+    else:
+        pos = res.tool0_pos + res.tool0_rot @ WRIST_CAMERA_POS
+        rot = res.tool0_rot @ _R_WRIST_CAM_IN_TOOL0
     return pos, rot
 
 
@@ -340,11 +370,21 @@ def clearance_penalty(q: np.ndarray, fk: FKResult | None = None, *, wrist_up: bo
     res = forward_kinematics(q) if fk is None else fk
     pen = 0.0
 
-    # Keep elbow-up branch (prevents forearm sweeping down into the table)
-    if q[2] < 0.15:
-        pen += 20.0 + 40.0 * (0.15 - float(q[2]))
-    if q[1] > -0.05:
-        pen += 20.0 + 40.0 * (float(q[1]) + 0.05)
+    # Keep elbow-up branch on both shoulder branches:
+    # - Sim branch (|wrap(q0)| <= pi/2): q[1] < -0.05 and q[2] > +0.15
+    # - Real Spark branch (|wrap(q0)| > pi/2): -3.09 < q[1] < -0.25 and q[2] < -0.15
+    if abs(wrap_angle(float(q[0]))) > 0.5 * math.pi:
+        if q[2] > -0.15:
+            pen += 20.0 + 40.0 * (float(q[2]) + 0.15)
+        if q[1] > -0.25:
+            pen += 20.0 + 40.0 * (float(q[1]) + 0.25)
+        if q[1] < -3.09:
+            pen += 20.0 + 40.0 * (-3.09 - float(q[1]))
+    else:
+        if q[2] < 0.15:
+            pen += 20.0 + 40.0 * (0.15 - float(q[2]))
+        if q[1] > -0.05:
+            pen += 20.0 + 40.0 * (float(q[1]) + 0.05)
 
     # Link origins: [shoulder, upper_arm, forearm, wrist_1, wrist_2, wrist_3]
     forearm_p, forearm_R = res.joint_pos_world[2], res.link_rots[2]
@@ -505,15 +545,26 @@ class BoundedDampedIK:
 
         # Multi-seed search covering both wrist_2 < 0 and wrist_2 > 0 elbow-up branches
         pan = math.atan2(float(target_pos[1]), float(target_pos[0]))
-        seeds = [
-            np.array([pan, -1.25, 2.20, -1.20, +1.5708, 0.0]),
-            np.array([pan - 0.35, -1.25, 2.50, -1.35, +0.95, 0.0]),
-            HOME_Q.copy(),
-            np.array([pan, -1.10, 1.60, -2.00, -1.5708, float(q_ref[5])]),
-            np.array([pan, -0.90, 1.30, -1.90, -1.5708, 1.5708]),
-            np.array([pan, -1.30, 1.80, -0.50, +1.5708, 0.0]),
-            np.array([pan + 0.25, -1.35, 2.10, -1.80, -1.5708, 0.0]),
-        ]
+        if abs(wrap_angle(float(q_ref[0]))) > 0.5 * math.pi:
+            pan_s = wrap_angle(pan - math.pi)
+            seeds = [
+                SPARK_HOME_Q.copy(),
+                np.array([pan_s, -1.55, -2.05, -1.10, +1.5708, float(q_ref[5])]),
+                np.array([pan_s, -1.35, -2.15, -1.20, +1.5708, 0.615]),
+                np.array([pan_s, -1.85, -1.85, -1.00, +1.5708, 0.80]),
+                np.array([pan_s - 0.25, -1.60, -2.10, -1.00, +1.5708, 1.40]),
+                np.array([pan_s + 0.25, -1.60, -2.10, -1.00, -1.5708, 0.0]),
+            ]
+        else:
+            seeds = [
+                np.array([pan, -1.25, 2.20, -1.20, +1.5708, 0.0]),
+                np.array([pan - 0.35, -1.25, 2.50, -1.35, +0.95, 0.0]),
+                HOME_Q.copy(),
+                np.array([pan, -1.10, 1.60, -2.00, -1.5708, float(q_ref[5])]),
+                np.array([pan, -0.90, 1.30, -1.90, -1.5708, 1.5708]),
+                np.array([pan, -1.30, 1.80, -0.50, +1.5708, 0.0]),
+                np.array([pan + 0.25, -1.35, 2.10, -1.80, -1.5708, 0.0]),
+            ]
 
         candidates = [(q0, pe0, re0, pen0)]
         for seed in seeds:
