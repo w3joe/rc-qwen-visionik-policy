@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Iterator
 
 import numpy as np
@@ -33,6 +34,7 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
     def __init__(self, first_obs: dict[str, Any], goals: list) -> None:
         super().__init__(first_obs)
         self.goals = list(goals)
+        self.instruction = str(first_obs.get("instruction") or "")
         self.events: list[dict] = []
         self.finisher_results: list = []
 
@@ -194,10 +196,14 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
 
     # ------------------------------------------------------------------ dispatch
     @staticmethod
-    def _execution_order(goals: list) -> list:
+    def _execution_order(goals: list, instruction: str = "") -> list:
         """Skill-library prior: with a bolt->hole and a nut->pocket goal and no stacking relation, insert the bolt first
-        (the nut sitting in its pocket gets knocked by the insertion approach otherwise; the baseline always does this)."""
+        (the nut sitting in its pocket gets knocked by the insertion approach otherwise; the baseline always does this).
+        An instruction that states an order ("first", "then", "before", "after") keeps the planner's order: ordered tasks
+        only count placements made in order."""
         if any(getattr(g, "relation", None) for g in goals):
+            return goals
+        if re.search(r"\b(first|then|before|after|afterwards|followed|next|finally)\b", instruction.lower()):
             return goals
         def rank(g):
             kind = SEAT_LOCAL_GEOM.get(getattr(g, "seat_id", ""), {}).get("kind")
@@ -208,7 +214,7 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
         return sorted(goals, key=rank)
 
     def _run_episode(self) -> Iterator[StepCommand]:
-        self.goals = self._execution_order(self.goals)
+        self.goals = self._execution_order(self.goals, self.instruction)
         for goal in self.goals:
             seat = SEAT_LOCAL_GEOM.get(getattr(goal, "seat_id", ""), {})
             kind = seat.get("kind")
