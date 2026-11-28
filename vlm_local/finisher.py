@@ -232,8 +232,8 @@ class PlacementFinisher:
         # Keep fingertip pads >= top_z + 1.5 mm while lowering nut bottom to floor_z + 0.5 mm (parametric in pocket depth)
         min_site_z = top_z + 0.0015 + pad_tip
         s_end_z = max(min_site_z, floor_z + 0.0005 + held.nut_pad_bottom + pad_tip)
-        # With low-force stall detection (zero pad slip), a perched nut stays >= 5.5 mm above s_end_z while an aligned nut drops within 2.9-3.5 mm
-        nut_depth_tol = 0.0029 if (top_z - floor_z) <= 0.011 else 0.0035
+        # With low-force stall detection (zero pad slip), a perched nut stays >= 5.5 mm above s_end_z while an aligned nut drops within 2.9-3.15 mm
+        nut_depth_tol = 0.0029 if (top_z - floor_z) <= 0.011 else 0.00315
         s_pre = np.array([seat_xyz[0], seat_xyz[1], top_z + 0.045 + pad_tip])
         clearance = seat_clearance(held.model, seat_id)
         return {
@@ -264,13 +264,20 @@ class PlacementFinisher:
             yield from c._move_cartesian(p["s_pre"], p["rot"], 0.0, pos_speed=0.016, settle=3, wrist_up=True)
         else:
             yield from c._move_cartesian(p["s_transit"], p["rot"], 0.0, pos_speed=0.025, rot_speed=0.16, settle=2)
-            # Refresh seat xy and fixture yaw from the robust multi-frame median (now including the overhead s_transit view)
+            # Refresh seat xy and fixture yaw: use the live overhead frame when >=3 seat keypoints are cleanly observed
+            # (wiping any occluded drift from an earlier bolt goal), else fall back to the multi-frame median filter.
             yield c._emit_hold(0.0, want_vision=True)
             yield c._emit_hold(0.0, want_vision=False)
-            seats_med, f_yaw, _ = c._get_filtered_fixture()
+            sc = c.scene
+            seats_med, f_yaw_med, _ = c._get_filtered_fixture()
             sid = p.get("seat_id")
-            if sid in seats_med:
-                f_xyz = np.asarray(seats_med[sid], float)
+            if sc is not None and sid in sc.seats and float(sc.fixture_confidence) >= 0.88:
+                f_xyz, f_yaw = np.asarray(sc.seats[sid], float), float(sc.fixture_yaw)
+            elif sid in seats_med:
+                f_xyz, f_yaw = np.asarray(seats_med[sid], float), float(f_yaw_med)
+            else:
+                f_xyz, f_yaw = None, 0.0
+            if f_xyz is not None:
                 if float(np.linalg.norm(f_xyz[:2] - p["seat_xyz"][:2])) < 0.035 and abs(wrap_angle(f_yaw - p["fyaw"])) < math.radians(15.0):
                     shift_xy = f_xyz[:2] - p["seat_xyz"][:2]
                     p["seat_xyz"] = f_xyz
