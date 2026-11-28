@@ -271,9 +271,12 @@ class PlacementV2Mixin:
                         if pw is not None and float(np.linalg.norm(pw[:2] - seat_xy)) < 0.035:
                             err_mm = round(float(np.linalg.norm(pw[:2] - seat_xy)) * 1000.0, 2)
                             break
+            table_washer = self._select(goal, min_confidence=0.45, ignore_seated=True)
             seated_ok = (err_mm is not None and err_mm <= 5.5) or (
-                err_mm is None and self.scene is not None
-                and any(p.kind == "washer" and is_part_in_seat(p, seat_id, self.scene) for p in self.scene.parts)
+                err_mm is None and (
+                    table_washer is None
+                    or (self.scene is not None and any(p.kind == "washer" and is_part_in_seat(p, seat_id, self.scene) for p in self.scene.parts))
+                )
             )
             self._log_ev("washer_bore_placed", seat=seat_id, seat_xy=[round(float(seat_xy[0]), 4), round(float(seat_xy[1]), 4)],
                          drop_z=round(drop_z, 4), err_mm=err_mm, ok=seated_ok, attempt=attempt)
@@ -366,6 +369,8 @@ class PlacementV2Mixin:
             drop_z = z_head + 0.0025 + max(pad_tip, grasp_ee_z)
             yield from self._move_cartesian(np.array([float(bolt_xy[0]), float(bolt_xy[1]), drop_z]), rot, 0.0,
                                             pos_speed=0.012, max_step=0.032, settle=3, tol=0.005, want_vision=False)
+            self._log_ev("washer_on_bolt_release", bolt_xy=[round(float(bolt_xy[0]), 4), round(float(bolt_xy[1]), 4)],
+                         drop_z=round(drop_z, 4), attempt=attempt)
             yield from self._grip_hold(0.82, steps=10, early_stop=True, want_vision=False)
             # Retract straight up clear of the standing shank before any lateral motion
             yield from self._move_cartesian(np.array([float(bolt_xy[0]), float(bolt_xy[1]), z_clear]), rot, 0.82,
