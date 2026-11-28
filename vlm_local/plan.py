@@ -74,6 +74,7 @@ class PlannedGoal:
     ref_model: str | None = None
     on_washer_model: str | None = None
     pid: str = ""
+    exclude_xys: list[np.ndarray] = field(default_factory=list)
 
 
 class PlanContext:
@@ -258,6 +259,12 @@ def validate_and_ground(plan: Plan, ctx: PlanContext) -> tuple[list[PlannedGoal]
                     gb.ref_model = gb.on_washer_model
                     break
 
+    non_goal_parts = [(p.raw_kind, p.position[:2].copy()) for k, p in ctx.ids.items() if k not in used and p.confidence >= 0.70]
+    for g in goals:
+        g.exclude_xys = [
+            xy for rk, xy in non_goal_parts
+            if rk != g.part_model and (g.target_xy is None or float(np.linalg.norm(xy - g.target_xy)) > 0.045)
+        ]
     try:
         print("[plan] goals " + "; ".join(f"{g.goal_id}:{g.part_model}" + (f"[on:{g.on_washer_model}]" if g.on_washer_model else "") for g in goals)
               + " | parts " + "; ".join(f"{k}:{v.raw_kind}" for k, v in ctx.ids.items()), file=sys.stderr, flush=True)

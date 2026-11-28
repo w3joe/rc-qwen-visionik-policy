@@ -835,6 +835,34 @@ def _reconstruct_bolt_single_view(
     return best_k0, best_k1, best_k2
 
 
+def _box_iou_2d(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+    if inter <= 0.0:
+        return 0.0
+    union = max(1e-6, (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+    return float(inter / union)
+
+
+def _proj_nut_box_wh(kp: Any, pose_type: str, cam: Any, uc: float, vc: float, z_c: float, yaw: float) -> tuple[float, float] | None:
+    from .vision import _part_pose_world
+
+    pt = cam.intersect_z(uc, vc, z_c)
+    if pt is None:
+        return None
+    _, R, _ = _part_pose_world(kp, pose_type, float(pt[0]), float(pt[1]), yaw)
+    r = kp.across_flats / math.sqrt(3.0)
+    hz = 0.5 * kp.thickness
+    verts = [[r * math.cos(k * math.pi / 3.0 + math.pi / 6.0), r * math.sin(k * math.pi / 3.0 + math.pi / 6.0), z]
+             for z in (-hz, hz) for k in range(6)]
+    vw = pt[None, :] + (np.asarray(verts, dtype=np.float64) @ R.T)
+    u, v, dep = cam.project(vw)
+    if np.any(dep <= 0.05):
+        return None
+    return float(u.max() - u.min()), float(v.max() - v.min())
+
+
 def _estimate_nut_pose_and_yaw(
     class_name: str,
     pos: np.ndarray,
@@ -843,8 +871,8 @@ def _estimate_nut_pose_and_yaw(
     imgs_rgb: dict[str, np.ndarray | None],
     fyaw: float = 0.0,
 ) -> tuple[np.ndarray, float, str]:
-    """Estimate `(axis, yaw, pose_hint)` for a nut WITHOUT using unreliable k1/k2 keypoints:
-    uses stereo z + fast silhouette yaw search on the YOLO box crop."""
+    """Estimate `(axis, yaw, pose_hint)` for a nut using per-view ray-plane projected 2D box geometry
+    (immune to side-camera pitch bias) + silhouette yaw search."""
     from .vision import KIT_PARTS, _part_pose_world, _rasterize_part_in_crop
 
     dims = _part_dims(class_name, "nut")
@@ -853,7 +881,7 @@ def _estimate_nut_pose_and_yaw(
     on_edge_z_thresh = 0.5 * (0.5 * th + 0.5 * af)
 
     kp = KIT_PARTS.get(class_name) or KIT_PARTS.get("nut_m30")
-    view_masks: list[tuple[Any, np.ndarray, tuple[int, int, int, int]]] = []
+    view_masks: list[tuple[Any, Detection2D, np.ndarray, tuple[int, int, int, int]]] = []
     for vname, det in cmap.items():
         im = imgs_rgb.get(vname)
         cam = cams.get(vname)
@@ -870,10 +898,62 @@ def _estimate_nut_pose_and_yaw(
         bg = np.median(patch[ring], axis=0) if int(ring.sum()) >= 8 else np.array([45.0, 68.0, 82.0], dtype=np.float32)
         fg_full = np.zeros((H, W), dtype=bool)
         fg_full[y0:y1, x0:x1] = np.linalg.norm(patch - bg[None, None, :], axis=-1) > 20.0
-        view_masks.append((cam, fg_full, (x0, y0, x1, y1)))
+        view_masks.append((cam, det, fg_full, (x0, y0, x1, y1)))
 
-    is_on_table = float(pos[2]) < 0.055
-    is_edge = is_on_table and (float(pos[2]) > on_edge_z_thresh + 0.002)
+    is_on_table = float(pos[2]) < 0.070
+
+    if kp is not None and is_on_table:
+        v_dets = [(cams[v], d) for v, d in cmap.items() if v in cams and d.conf >= 0.30]
+        if v_dets:
+            ly_errs: list[float] = []
+            for cam, d in v_dets:
+                bw, bh = max(2.0, d.xyxy[2] - d.xyxy[0]), max(2.0, d.xyxy[3] - d.xyxy[1])
+                uc, vc = 0.5 * (d.xyxy[0] + d.xyxy[2]), 0.5 * (d.xyxy[1] + d.xyxy[3])
+                es = []
+                for deg in range(0, 60, 15):
+                    wh = _proj_nut_box_wh(kp, "lying", cam, uc, vc, 0.5 * th, math.radians(float(deg)))
+                    if wh is not None:
+                        es.append(abs(wh[0] - bw) / bw + 1.5 * abs(wh[1] - bh) / bh)
+                if es:
+                    ly_errs.append(min(es))
+
+            best_ed_err, best_ed_yaw = 1e9, 0.0
+            for deg in range(0, 180, 15):
+                ya = math.radians(float(deg))
+                es = []
+                for cam, d in v_dets:
+                    bw, bh = max(2.0, d.xyxy[2] - d.xyxy[0]), max(2.0, d.xyxy[3] - d.xyxy[1])
+                    uc, vc = 0.5 * (d.xyxy[0] + d.xyxy[2]), 0.5 * (d.xyxy[1] + d.xyxy[3])
+                    wh = _proj_nut_box_wh(kp, "on_edge", cam, uc, vc, 0.5 * af, ya)
+                    if wh is not None:
+                        es.append(abs(wh[0] - bw) / bw + 1.5 * abs(wh[1] - bh) / bh)
+                if es and float(np.mean(es)) < best_ed_err:
+                    best_ed_err = float(np.mean(es))
+                    best_ed_yaw = ya
+
+            ly_mean = float(np.mean(ly_errs)) if ly_errs else 9.0
+            if best_ed_err < ly_mean:
+                # Resolve +yaw vs -yaw sign (ambiguous in axis-aligned box wh) via multi-view silhouette IoU
+                if view_masks:
+                    best_ed_iou = -1.0
+                    for deg in range(0, 180, 10):
+                        ya = math.radians(float(deg))
+                        _, R_ed, _ = _part_pose_world(kp, "on_edge", float(pos[0]), float(pos[1]), ya)
+                        ious = []
+                        for cam, det, fg_full, bbox in view_masks:
+                            uc, vc = 0.5 * (det.xyxy[0] + det.xyxy[2]), 0.5 * (det.xyxy[1] + det.xyxy[3])
+                            pt_v = cam.intersect_z(uc, vc, 0.5 * af)
+                            p_try = pt_v if pt_v is not None else np.array([float(pos[0]), float(pos[1]), 0.5 * af], dtype=np.float64)
+                            rast = _rasterize_part_in_crop(kp, p_try, R_ed, cam, bbox, pad=2)
+                            if rast is None:
+                                continue
+                            (rx0, ry0, rx1, ry1), pred, _hole = rast
+                            obs_c = fg_full[ry0:ry1, rx0:rx1]
+                            ious.append(int((pred & obs_c).sum()) / max(int((pred | obs_c).sum()), 1))
+                        if ious and float(np.mean(ious)) > best_ed_iou:
+                            best_ed_iou, best_ed_yaw = float(np.mean(ious)), ya
+                ax = np.array([math.cos(best_ed_yaw), math.sin(best_ed_yaw), 0.0], dtype=np.float64)
+                return ax, wrap_angle(best_ed_yaw), "on_edge"
 
     if kp is not None and view_masks:
         best_ly_sc, best_ly_yaw = -1.0, wrap_angle(fyaw + 0.5 * math.pi)
@@ -881,9 +961,11 @@ def _estimate_nut_pose_and_yaw(
         for deg in range(0, 60, 10):
             ya = math.radians(float(deg))
             _, R_ly, _ = _part_pose_world(kp, "lying", float(pos[0]), float(pos[1]), ya)
-            p_try = np.array([float(pos[0]), float(pos[1]), z_ly], dtype=np.float64)
             ious = []
-            for cam, fg_full, bbox in view_masks:
+            for cam, det, fg_full, bbox in view_masks:
+                uc, vc = 0.5 * (det.xyxy[0] + det.xyxy[2]), 0.5 * (det.xyxy[1] + det.xyxy[3])
+                pt_v = cam.intersect_z(uc, vc, z_ly) if is_on_table else None
+                p_try = pt_v if pt_v is not None else np.array([float(pos[0]), float(pos[1]), z_ly], dtype=np.float64)
                 rast = _rasterize_part_in_crop(kp, p_try, R_ly, cam, bbox, pad=2)
                 if rast is None:
                     continue
@@ -892,31 +974,9 @@ def _estimate_nut_pose_and_yaw(
                 ious.append(int((pred & obs_c).sum()) / max(int((pred | obs_c).sum()), 1))
             if ious and float(np.mean(ious)) > best_ly_sc:
                 best_ly_sc, best_ly_yaw = float(np.mean(ious)), ya
-
-        if is_on_table:
-            best_ed_sc, best_ed_yaw = -1.0, 0.0
-            for deg in range(0, 180, 30):
-                ya = math.radians(float(deg))
-                p_ed, R_ed, _ = _part_pose_world(kp, "on_edge", float(pos[0]), float(pos[1]), ya)
-                ious = []
-                for cam, fg_full, bbox in view_masks:
-                    rast = _rasterize_part_in_crop(kp, p_ed, R_ed, cam, bbox, pad=2)
-                    if rast is None:
-                        continue
-                    (rx0, ry0, rx1, ry1), pred, _hole = rast
-                    obs_c = fg_full[ry0:ry1, rx0:rx1]
-                    ious.append(int((pred & obs_c).sum()) / max(int((pred | obs_c).sum()), 1))
-                if ious and float(np.mean(ious)) > best_ed_sc:
-                    best_ed_sc, best_ed_yaw = float(np.mean(ious)), ya
-
-            z_prior = 0.08 if is_edge else -0.06
-            if best_ed_sc + z_prior > best_ly_sc:
-                ax = np.array([math.cos(best_ed_yaw), math.sin(best_ed_yaw), 0.0], dtype=np.float64)
-                return ax, wrap_angle(best_ed_yaw), "on_edge"
-
         return np.array([0.0, 0.0, 1.0], dtype=np.float64), wrap_angle(best_ly_yaw), "lying"
 
-    if is_edge:
+    if is_on_table and float(pos[2]) > on_edge_z_thresh + 0.002:
         return np.array([1.0, 0.0, 0.0], dtype=np.float64), 0.0, "on_edge"
     return np.array([0.0, 0.0, 1.0], dtype=np.float64), wrap_angle(fyaw + 0.5 * math.pi), "lying"
 
@@ -982,6 +1042,13 @@ def reconstruct_parts(
     fyaw = float(fixture_info["fixture_yaw"])
     seats = fixture_info["seats"]
 
+    def _plausible_stereo_3d(pt3: np.ndarray) -> bool:
+        if not (0.25 <= float(pt3[0]) <= 1.22 and -0.55 + _cell.LAYOUT_SHIFT[1] <= float(pt3[1]) <= 0.55):
+            return False
+        lx, ly = _fixture_local_xy(pt3[:2], fx, fy, fyaw)
+        on_fixture = (-0.04 <= lx <= 0.14 and -0.13 <= ly <= 0.13)
+        return (-0.05 <= float(pt3[2]) <= 0.35) if on_fixture else (-0.035 <= float(pt3[2]) <= 0.068)
+
     all_classes: set[str] = set()
     for dets in part_dets_by_view.values():
         for d in dets:
@@ -1014,7 +1081,7 @@ def reconstruct_parts(
                         continue
                     if float(np.dot(pt3 - ol, rl)) <= 0.08 or float(np.dot(pt3 - or_, rr)) <= 0.08:
                         continue
-                    if not (0.25 <= float(pt3[0]) <= 1.22 and -0.55 + _cell.LAYOUT_SHIFT[1] <= float(pt3[1]) <= 0.55 and -0.05 <= float(pt3[2]) <= 0.35):
+                    if not _plausible_stereo_3d(pt3):
                         continue
                     # A washer outside the fixture block cannot float > 6.5 cm in the air (rejects false cross-part stereo pairs).
                     if cls_name.startswith("washer") and float(pt3[2]) > 0.065:
@@ -1063,7 +1130,7 @@ def reconstruct_parts(
                         os_, rs = cs.unproject_ray(us, vs)
                         pt_sw, epi_sw = triangulate_rays([os_, ow], [rs, rw], [1.0, 2.5])
                         if epi_sw <= 0.045 and float(np.dot(pt_sw - ow, rw)) > 0.05 and float(np.dot(pt_sw - os_, rs)) > 0.08:
-                            if 0.25 <= float(pt_sw[0]) <= 1.22 and -0.55 + _cell.LAYOUT_SHIFT[1] <= float(pt_sw[1]) <= 0.55 and -0.05 <= float(pt_sw[2]) <= 0.35:
+                            if _plausible_stereo_3d(pt_sw):
                                 if best_side is None or epi_sw < best_side[0]:
                                     best_side = (epi_sw, sname, idx_s, pt_sw)
                 if best_side is not None:
@@ -1174,6 +1241,17 @@ def reconstruct_parts(
         if kind == "nut":
             axis_t2h, yaw, pose_hint = _estimate_nut_pose_and_yaw(cls_name, pos, cmap, cams, imgs_rgb, fyaw)
             axis_h2t = axis_t2h
+            if len(cmap) == 1:
+                vname_1, det_1 = next(iter(cmap.items()))
+                cam_1 = cams[vname_1]
+                ua_1, va_1 = det_1.anchor_uv(cam_1.width, cam_1.height)
+                z_surf_1 = _single_view_surface_z(cam_1, ua_1, va_1, fx, fy, fyaw, seats, kind)
+                if z_surf_1 < 0.002:
+                    zc_1 = float(dims.get("across_flats", 0.046)) * 0.5 if pose_hint == "on_edge" else float(dims.get("thickness", 0.0256)) * 0.5
+                    u0_1, v0_1 = (float(det_1.kpts_xy[0, 0]), float(det_1.kpts_xy[0, 1])) if det_1.usable_kpt(0, cam_1.width, cam_1.height, 0.28) else (ua_1, va_1)
+                    p_refined = cam_1.intersect_z(u0_1, v0_1, zc_1)
+                    if p_refined is not None:
+                        pos = p_refined
 
         if not (0.25 <= float(pos[0]) <= 1.20 and -0.52 + _cell.LAYOUT_SHIFT[1] <= float(pos[1]) <= 0.50 and -0.04 <= float(pos[2]) <= 0.30):
             continue
@@ -1215,16 +1293,36 @@ def reconstruct_parts(
                 "occluded": len(cmap) == 1,
                 "views": sorted(cmap.keys()),
                 "uv_by_view": uv_by_view,
+                "_boxes_by_view": {vn: dt.xyxy for vn, dt in cmap.items()},
             }
         )
 
-    # Deduplicate overlapping 3D detections (e.g. single-view ghost or cross-size box overlap within 20 mm)
+    # Deduplicate overlapping 3D detections, shared 2D boxes across size classes, and single-view ghosts
     parts_raw.sort(key=lambda p: (len(p["views"]), p["confidence"]), reverse=True)
     deduped: list[dict[str, Any]] = []
+    claimed_boxes: dict[str, list[tuple[float, float, float, float]]] = {"left": [], "right": [], "wrist": []}
     for cand in parts_raw:
         cpos = np.asarray(cand["position"], dtype=np.float64)
+        cboxes = cand.pop("_boxes_by_view", {})
         if any(float(np.linalg.norm(cpos - np.asarray(prev["position"], dtype=np.float64))) < 0.020 for prev in deduped):
             continue
+        if cboxes and all(any(_box_iou_2d(bx, prev_bx) > 0.50 for prev_bx in claimed_boxes.get(vn, ())) for vn, bx in cboxes.items()):
+            continue
+        if len(cand["views"]) == 1:
+            vn = cand["views"][0]
+            cam_v = cams.get(vn)
+            uv_v = cand["uv_by_view"].get(vn)
+            if cam_v is not None and uv_v is not None:
+                o_v, r_v = cam_v.unproject_ray(float(uv_v[0]), float(uv_v[1]))
+                if any(
+                    len(prev["views"]) >= 2
+                    and prev["kind"] == cand["kind"]
+                    and ray_point_distance(o_v, r_v, np.asarray(prev["position"], dtype=np.float64))[0] < 0.028
+                    for prev in deduped
+                ):
+                    continue
+        for vn, bx in cboxes.items():
+            claimed_boxes.setdefault(vn, []).append(bx)
         deduped.append(cand)
     return deduped
 
@@ -1526,6 +1624,7 @@ def estimate_scene_from_detector(obs: dict[str, Any]) -> dict[str, Any] | None:
         "fixture_position": list(det_out["fixture_position"]),
         "fixture_confidence": fix_conf,
         "seat_meta": det_out["seat_meta"],
+        "selfcal": det_out.get("selfcal") or {},
         "camera_calibration": {},
         "cameras": {k: c for k, c in cams.items() if k in ("left", "right")},
         "perception_source": "detector",
