@@ -165,10 +165,11 @@ class PlacementFinisher:
         wrist below the base plane). Try the four headings and keep the first whose transit / pre-insert / insert poses
         all solve exactly and clear the table."""
         c = self.c
-        base = reach_yaw(fyaw)
+        # Preferred: approach along the fixture's +x (from the tray toward the block) so the gripper body hangs over the
+        # low tray, not over the 115 mm block it would rest on; then the other headings in fixture quarter turns.
         best, best_cost, tried = None, float("inf"), []
-        for k in (0, 2, 1, 3):
-            yaw = base + k * math.pi / 2.0
+        for k in (0, 1, 3, 2):
+            yaw = fyaw + k * math.pi / 2.0
             plan = self._bolt_plan(held, seat_id, sg, seat_xyz, fyaw, approach_yaw=yaw)
             q = c.q_target.copy()
             cost = 0.0
