@@ -933,6 +933,25 @@ def _estimate_nut_pose_and_yaw(
 
             ly_mean = float(np.mean(ly_errs)) if ly_errs else 9.0
             if best_ed_err < ly_mean:
+                # Resolve +yaw vs -yaw sign (ambiguous in axis-aligned box wh) via multi-view silhouette IoU
+                if view_masks:
+                    best_ed_iou = -1.0
+                    for deg in range(0, 180, 10):
+                        ya = math.radians(float(deg))
+                        _, R_ed, _ = _part_pose_world(kp, "on_edge", float(pos[0]), float(pos[1]), ya)
+                        ious = []
+                        for cam, det, fg_full, bbox in view_masks:
+                            uc, vc = 0.5 * (det.xyxy[0] + det.xyxy[2]), 0.5 * (det.xyxy[1] + det.xyxy[3])
+                            pt_v = cam.intersect_z(uc, vc, 0.5 * af)
+                            p_try = pt_v if pt_v is not None else np.array([float(pos[0]), float(pos[1]), 0.5 * af], dtype=np.float64)
+                            rast = _rasterize_part_in_crop(kp, p_try, R_ed, cam, bbox, pad=2)
+                            if rast is None:
+                                continue
+                            (rx0, ry0, rx1, ry1), pred, _hole = rast
+                            obs_c = fg_full[ry0:ry1, rx0:rx1]
+                            ious.append(int((pred & obs_c).sum()) / max(int((pred | obs_c).sum()), 1))
+                        if ious and float(np.mean(ious)) > best_ed_iou:
+                            best_ed_iou, best_ed_yaw = float(np.mean(ious)), ya
                 ax = np.array([math.cos(best_ed_yaw), math.sin(best_ed_yaw), 0.0], dtype=np.float64)
                 return ax, wrap_angle(best_ed_yaw), "on_edge"
 

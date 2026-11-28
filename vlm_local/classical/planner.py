@@ -34,6 +34,7 @@ from .kinematics import (
     fk_pose,
     nearest_pi_yaw,
     normalize,
+    pad_tip_for_gap,
     quat_to_mat,
     rot_error,
     site_rot_from_zx,
@@ -971,12 +972,14 @@ class EpisodeController:
         af = float(geom.get("across_flats", 0.046))
         th = float(geom.get("thickness", 0.0256))
 
-        # Hover directly over the nut first so the wrist camera refines its exact XY and on-edge axis
-        yield from self._ensure_safe_height(0.24, 0.0)
-        p_look = np.array([float(part.position[0]), float(part.position[1]), 0.25], dtype=np.float64)
+        # Hover directly over the nut with slightly parted fingers so the wrist camera sees it unoccluded
+        grip_push = 0.28  # ~25 mm inner gap (41 mm outer span): wide twin-prong bar prevents spinning the nut
+        yield from self._ensure_safe_height(0.25, grip_push)
+        p_look = np.array([float(part.position[0]), float(part.position[1]), 0.28], dtype=np.float64)
         q_look = self.ik.solve(p_look, down_mat(0.0), self.q_target).q
-        yield from self._move_joint(q_look, 0.0, settle=2, want_vision=False)
-        yield self._emit_hold(0.0, want_vision=True)
+        yield from self._move_joint(q_look, grip_push, settle=2, want_vision=False)
+        yield self._emit_hold(grip_push, want_vision=True)
+        yield self._emit_hold(grip_push, want_vision=False)
         if self.scene is not None:
             near_same = [
                 p for p in self.scene.parts
@@ -987,6 +990,7 @@ class EpisodeController:
             if near_same:
                 part = min(near_same, key=lambda p: float(np.linalg.norm(p.position[:2] - part.position[:2])))
                 if part.pose_hint != "on_edge":
+                    self._last_tip_xy = part.position[:2].copy()
                     yield from self._grip_hold(0.72, steps=6, early_stop=True, want_vision=True)
                     return
 
@@ -1026,22 +1030,24 @@ class EpisodeController:
                 best_dir = d
 
         rot_push = site_rot_from_zx(np.array([0.0, 0.0, -1.0]), best_dir)
-        z_site = max(0.014, 0.68 * af) + PAD_TIP_CLOSED
+        z_site = max(0.014, 0.68 * af) + pad_tip_for_gap(0.025)
         d_start = max(0.052, 0.5 * th + 0.038)
-        d_end = max(0.042, 0.85 * af)
+        d_end = max(0.044, 0.90 * af)
         p_start = np.array([pos[0] - d_start * best_dir[0], pos[1] - d_start * best_dir[1], z_site], dtype=np.float64)
         p_end = np.array([pos[0] + d_end * best_dir[0], pos[1] + d_end * best_dir[1], z_site], dtype=np.float64)
         p_hover = np.array([p_start[0], p_start[1], 0.25], dtype=np.float64)
 
         q_hover = self.ik.solve(p_hover, rot_push, self.q_target).q
-        yield from self._move_joint(q_hover, 0.0, settle=2)
-        yield from self._move_cartesian(p_start, rot_push, 0.0, pos_speed=0.020, settle=2)
-        yield from self._move_cartesian(p_end, rot_push, 0.0, pos_speed=0.015, settle=2)
+        yield from self._move_joint(q_hover, grip_push, settle=2)
+        yield from self._move_cartesian(p_start, rot_push, grip_push, pos_speed=0.020, settle=2)
+        yield from self._move_cartesian(p_end, rot_push, grip_push, pos_speed=0.015, settle=2)
+        tipped_xy = np.array([pos[0] + 0.025 * best_dir[0], pos[1] + 0.025 * best_dir[1]], dtype=np.float64)
+        self._last_tip_xy = tipped_xy.copy()
         yield from self._move_cartesian(
-            np.array([p_end[0], p_end[1], 0.26], dtype=np.float64), rot_push, 0.72, pos_speed=0.025, settle=1,
+            np.array([tipped_xy[0], tipped_xy[1], 0.27], dtype=np.float64), down_mat(0.0), 0.72, pos_speed=0.025, settle=2,
             want_vision=False,
         )
-        yield from self._grip_hold(0.72, steps=10, early_stop=False, want_vision=True)
+        yield from self._grip_hold(0.72, steps=6, early_stop=False, want_vision=True)
 
     def _compute_flat_nut_grasp(
         self,

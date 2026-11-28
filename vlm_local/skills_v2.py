@@ -160,6 +160,8 @@ class PlacementV2Mixin:
                 if part.pose_hint != "on_edge":
                     break
                 yield from self._tip_edge_nut(part, model=model, yaw_offset=(0.0 if tip_try == 0 else 0.5 * math.pi))
+                if getattr(self, "_last_tip_xy", None) is not None and getattr(goal, "target_xy", None) is not None:
+                    goal.target_xy = self._last_tip_xy.copy()
                 self.tracker.reset_part()
                 yield from self._observe_target(goal, grip=0.72, min_samples=1, max_wait=4)
                 part = self.tracker.filtered_part()

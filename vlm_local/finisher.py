@@ -240,7 +240,8 @@ class PlacementFinisher:
             "kind": "nut", "rot": rot, "des_y_yaw": des_y_yaw, "flat_normal_yaw": flat_normal_yaw, "wrist_up": False,
             "s_pre": s_pre, "s_end": np.array([seat_xyz[0], seat_xyz[1], s_end_z]), "grip": 0.0,
             "s_transit": np.array([seat_xyz[0], seat_xyz[1], 0.295]), "g_release": 0.80,
-            "clearance": clearance, "chamfer": chamfer, "stall_lag": 0.0032, "stall_margin": -0.002, "stall_steps": 3,
+            "clearance": clearance, "chamfer": chamfer, "stall_lag": 0.0042, "stall_margin": -0.002,
+            "stall_ceiling": 0.014, "stall_steps": 3,
             "seat_xyz": seat_xyz, "fyaw": fyaw, "pad_tip": pad_tip, "nut_depth_tol": nut_depth_tol,
             "tap_z": floor_z + nut["thickness"] + 0.0012 + PAD_TIP_CLOSED, "top_z": top_z,
             "xy_tol": max(self.tol.xy_floor, 0.5 * clearance + 0.0005),
@@ -329,31 +330,32 @@ class PlacementFinisher:
         c = self.c
         pts = search_pattern(p["clearance"], p["chamfer"], attempt)
         if p["kind"] == "nut":
-            # Parallel jaws self-align the nut's flats to +y_site on close, so search XY around (0,0) at dyaw=0 first,
-            # then small yaw offsets (+-6, +-12 deg), and wider XY/yaw combinations on subsequent attempts.
-            best_dyaw = float(p.get("best_dyaw", 0.0))
-            r_in = 0.0030
-            card_xy = [(r_in, 0.0), (-r_in, 0.0), (0.0, r_in), (0.0, -r_in)]
+            # Parallel jaws self-align the nut's flats to +y_site on close, and wrist camera refreshes fyaw at s_transit,
+            # so keep dyaw within +-4.5 deg (never twist off the hex) and search XY rings around the pocket centre.
+            r1, r2 = 0.0028, 0.0048
+            ring1 = [(r1, 0.0), (-r1, 0.0), (0.0, r1), (0.0, -r1), (r1 * 0.71, r1 * 0.71), (-r1 * 0.71, r1 * 0.71), (-r1 * 0.71, -r1 * 0.71), (r1 * 0.71, -r1 * 0.71)]
             if attempt == 0:
                 trials: list[tuple[float, float, float]] = (
                     [(0.0, 0.0, 0.0)]
-                    + [(ox, oy, 0.0) for ox, oy in card_xy]
-                    + [(0.0, 0.0, math.radians(a)) for a in (6.0, -6.0, 12.0, -12.0)]
+                    + [(ox, oy, 0.0) for ox, oy in ring1]
+                    + [(0.0, 0.0, math.radians(4.5)), (0.0, 0.0, math.radians(-4.5))]
                 )
             elif attempt == 1:
+                ring2 = [(r2 * math.cos(k * math.pi / 4), r2 * math.sin(k * math.pi / 4)) for k in range(8)]
                 trials = (
-                    [(ox, oy, best_dyaw) for ox, oy in pts]
-                    + [(0.0, 0.0, math.radians(a)) for a in (18.0, -18.0, 24.0, -24.0, 30.0)]
+                    [(ox, oy, 0.0) for ox, oy in ring2]
+                    + [(ox, oy, dy) for dy in (math.radians(4.5), math.radians(-4.5)) for ox, oy in ring1[:4]]
                 )
             else:
-                trials = [(ox, oy, dy) for dy in (best_dyaw, 0.0) for ox, oy in pts]
+                trials = [(ox, oy, dy) for dy in (0.0, math.radians(4.5), math.radians(-4.5)) for ox, oy in pts]
         else:
             trials = [(ox, oy, 0.0) for ox, oy in pts]
 
         s_pre, s_end = p["s_pre"], p["s_end"]
         depth_tol = float(p.get("nut_depth_tol", self.tol.nut_depth)) if p["kind"] == "nut" else self.tol.depth
         stall_req = int(p.get("stall_steps", 6))
-        desc_step = 0.020 if p["kind"] == "nut" else 0.030
+        stall_ceil = float(p.get("stall_ceiling", 1.0))
+        desc_step = 0.016 if p["kind"] == "nut" else 0.030
         best_err_seen = float(p.get("best_depth_err", 1e9))
 
         for idx, (ox, oy, dyaw) in enumerate(trials):
@@ -381,7 +383,7 @@ class PlacementFinisher:
                     yield c._emit_toward(q_t, 0.0, max_step=desc_step, want_vision=False)
                     cmd_p, _ = fk_pose(c.q_target)
                     lag = float(c.proprio["ee_pos"][2] - cmd_p[2])
-                    if lag > p["stall_lag"] and cmd_p[2] > p_end[2] + p["stall_margin"]:
+                    if lag > p["stall_lag"] and (p_end[2] + p["stall_margin"]) < cmd_p[2] <= (p_end[2] + stall_ceil):
                         stall += 1
                         if stall >= stall_req:
                             stalled = True
@@ -391,8 +393,8 @@ class PlacementFinisher:
                 if stalled:
                     break
             if not stalled:
-                for _ in range(8):
-                    if p["kind"] == "nut":
+                for settle_i in range(8):
+                    if p["kind"] == "nut" and settle_i >= 4:
                         cmd_p, _ = fk_pose(c.q_target)
                         if float(c.proprio["ee_pos"][2] - cmd_p[2]) > p["stall_lag"]:
                             stalled = True
