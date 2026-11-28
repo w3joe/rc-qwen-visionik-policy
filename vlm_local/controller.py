@@ -57,9 +57,11 @@ class VLMEpisodeController(PlacementV2Mixin, EpisodeController):
         # part after it has been unleaned/tipped, which moves it by tens of cm), so prefer same-model candidates at any
         # distance; otherwise the nearest same-kind detection within TRACK_RADIUS.
         best = None
+        exclude_xys = getattr(goal, "exclude_xys", None) or ()
         for floor in (min_confidence, 0.15):  # same relaxation as the original selector
             pool = [p for p in self.scene.parts if p.kind == goal.part_kind and p.confidence >= floor
-                    and not (ignore_seated and goal.seat_id and is_part_in_seat(p, goal.seat_id, self.scene))]
+                    and not (ignore_seated and goal.seat_id and is_part_in_seat(p, goal.seat_id, self.scene))
+                    and not any(float(np.linalg.norm(p.position[:2] - ex)) < 0.050 for ex in exclude_xys)]
             same = [p for p in pool if p.raw_kind == goal.part_model]
             if goal.part_kind in ("bolt", "nut") and same:
                 pool, radius = same, 0.5

@@ -232,16 +232,15 @@ class PlacementFinisher:
         # Keep fingertip pads >= top_z + 1.5 mm while lowering nut bottom to floor_z + 0.5 mm (parametric in pocket depth)
         min_site_z = top_z + 0.0015 + pad_tip
         s_end_z = max(min_site_z, floor_z + 0.0005 + held.nut_pad_bottom + pad_tip)
-        nut_bottom_at_end = s_end_z - pad_tip - held.nut_pad_bottom
-        perched_err = (top_z - chamfer) - nut_bottom_at_end
-        nut_depth_tol = float(np.clip(perched_err - 0.0020, 0.0032, self.tol.nut_depth))
+        # With low-force stall detection (zero pad slip), a perched nut stays >= 5.5 mm above s_end_z while an aligned nut drops within 3.5 mm
+        nut_depth_tol = 0.0035
         s_pre = np.array([seat_xyz[0], seat_xyz[1], top_z + 0.045 + pad_tip])
         clearance = seat_clearance(held.model, seat_id)
         return {
             "kind": "nut", "rot": rot, "des_y_yaw": des_y_yaw, "flat_normal_yaw": flat_normal_yaw, "wrist_up": False,
             "s_pre": s_pre, "s_end": np.array([seat_xyz[0], seat_xyz[1], s_end_z]), "grip": 0.0,
             "s_transit": np.array([seat_xyz[0], seat_xyz[1], 0.295]), "g_release": 0.80,
-            "clearance": clearance, "chamfer": chamfer, "stall_lag": 0.0055, "stall_margin": 0.004,
+            "clearance": clearance, "chamfer": chamfer, "stall_lag": 0.0032, "stall_margin": -0.002, "stall_steps": 3,
             "seat_xyz": seat_xyz, "fyaw": fyaw, "pad_tip": pad_tip, "nut_depth_tol": nut_depth_tol,
             "tap_z": floor_z + nut["thickness"] + 0.0012 + PAD_TIP_CLOSED, "top_z": top_z,
             "xy_tol": max(self.tol.xy_floor, 0.5 * clearance + 0.0005),
@@ -264,6 +263,26 @@ class PlacementFinisher:
             yield from c._move_cartesian(p["s_pre"], p["rot"], 0.0, pos_speed=0.016, settle=3, wrist_up=True)
         else:
             yield from c._move_cartesian(p["s_transit"], p["rot"], 0.0, pos_speed=0.025, rot_speed=0.16, settle=2)
+            # Refresh seat xy and fixture yaw from the overhead wrist camera before the held nut occludes the pocket
+            yield c._emit_hold(0.0, want_vision=True)
+            yield c._emit_hold(0.0, want_vision=False)
+            sc = c.scene
+            sid = p.get("seat_id")
+            if sc is not None and sid in sc.seats and float(sc.fixture_confidence) >= 0.55:
+                f_xyz = np.asarray(sc.seats[sid], float)
+                f_yaw = float(sc.fixture_yaw)
+                if float(np.linalg.norm(f_xyz[:2] - p["seat_xyz"][:2])) < 0.035 and abs(wrap_angle(f_yaw - p["fyaw"])) < math.radians(15.0):
+                    shift_xy = f_xyz[:2] - p["seat_xyz"][:2]
+                    p["seat_xyz"] = f_xyz
+                    p["s_pre"][:2] = p["s_pre"][:2] + shift_xy
+                    p["s_end"][:2] = p["s_end"][:2] + shift_xy
+                    p["fyaw"] = f_yaw
+                    p["flat_normal_yaw"] = math.pi / 2.0 + f_yaw
+                    p["des_y_yaw"] = closest_hex_yaw(p["des_y_yaw"], p["flat_normal_yaw"])
+                    p["rot"] = site_rot_from_zy(
+                        np.array([0.0, 0.0, -1.0]),
+                        np.array([math.cos(p["des_y_yaw"]), math.sin(p["des_y_yaw"]), 0.0]),
+                    )
             yield from c._move_cartesian(p["s_pre"], p["rot"], 0.0, pos_speed=0.016, settle=3)
 
     def _refine_held(self, p: dict, held: HeldPart) -> Iterator[StepCommand]:
@@ -310,27 +329,34 @@ class PlacementFinisher:
         c = self.c
         pts = search_pattern(p["clearance"], p["chamfer"], attempt)
         if p["kind"] == "nut":
-            # Hex flats repeat every 60 deg. Attempt 0 sweeps the full [-22.5..+30] deg range in 7.5 deg steps at (0,0),
-            # then probes the inner XY ring at the yaw that sank deepest into the pocket lead-in.
+            # Parallel jaws self-align the nut's flats to +y_site on close, so search XY around (0,0) at dyaw=0 first,
+            # then small yaw offsets (+-6, +-12 deg), and wider XY/yaw combinations on subsequent attempts.
             best_dyaw = float(p.get("best_dyaw", 0.0))
+            r_in = 0.0030
+            card_xy = [(r_in, 0.0), (-r_in, 0.0), (0.0, r_in), (0.0, -r_in)]
             if attempt == 0:
-                yaw_sweep = [math.radians(a) for a in (0.0, 7.5, -7.5, 15.0, -15.0, 22.5, -22.5, 30.0)]
-                trials: list[tuple[float, float, float]] = [(0.0, 0.0, dy) for dy in yaw_sweep] + [(ox, oy, None) for ox, oy in pts[1:]]  # type: ignore[misc]
+                trials: list[tuple[float, float, float]] = (
+                    [(0.0, 0.0, 0.0)]
+                    + [(ox, oy, 0.0) for ox, oy in card_xy]
+                    + [(0.0, 0.0, math.radians(a)) for a in (6.0, -6.0, 12.0, -12.0)]
+                )
             elif attempt == 1:
-                trials = [(0.0, 0.0, best_dyaw + math.radians(4.0)), (0.0, 0.0, best_dyaw - math.radians(4.0))] + [
-                    (ox, oy, best_dyaw) for ox, oy in pts
-                ]
+                trials = (
+                    [(ox, oy, best_dyaw) for ox, oy in pts]
+                    + [(0.0, 0.0, math.radians(a)) for a in (18.0, -18.0, 24.0, -24.0, 30.0)]
+                )
             else:
-                trials = [(ox, oy, dy) for dy in (best_dyaw, best_dyaw + math.radians(15.0), best_dyaw - math.radians(15.0)) for ox, oy in pts]
+                trials = [(ox, oy, dy) for dy in (best_dyaw, 0.0) for ox, oy in pts]
         else:
             trials = [(ox, oy, 0.0) for ox, oy in pts]
 
         s_pre, s_end = p["s_pre"], p["s_end"]
         depth_tol = float(p.get("nut_depth_tol", self.tol.nut_depth)) if p["kind"] == "nut" else self.tol.depth
+        stall_req = int(p.get("stall_steps", 6))
+        desc_step = 0.020 if p["kind"] == "nut" else 0.030
         best_err_seen = float(p.get("best_depth_err", 1e9))
 
-        for idx, (ox, oy, dyaw_raw) in enumerate(trials):
-            dyaw = float(p.get("best_dyaw", 0.0)) if dyaw_raw is None else float(dyaw_raw)
+        for idx, (ox, oy, dyaw) in enumerate(trials):
             rot = self._rot_for(p, dyaw)
             p_start, p_end = s_pre + [ox, oy, 0.0], s_end + [ox, oy, 0.0]
             if idx > 0:
@@ -352,12 +378,12 @@ class PlacementFinisher:
                 for _ in range(30):
                     if float(np.max(np.abs(q_t - c.q_target))) <= 2e-4:
                         break
-                    yield c._emit_toward(q_t, 0.0, max_step=0.030, want_vision=False)
+                    yield c._emit_toward(q_t, 0.0, max_step=desc_step, want_vision=False)
                     cmd_p, _ = fk_pose(c.q_target)
                     lag = float(c.proprio["ee_pos"][2] - cmd_p[2])
                     if lag > p["stall_lag"] and cmd_p[2] > p_end[2] + p["stall_margin"]:
                         stall += 1
-                        if stall >= 6:
+                        if stall >= stall_req:
                             stalled = True
                             break
                     else:
@@ -366,7 +392,12 @@ class PlacementFinisher:
                     break
             if not stalled:
                 for _ in range(8):
-                    yield c._emit_toward(q_prev, 0.0, max_step=0.025, want_vision=False)
+                    if p["kind"] == "nut":
+                        cmd_p, _ = fk_pose(c.q_target)
+                        if float(c.proprio["ee_pos"][2] - cmd_p[2]) > p["stall_lag"]:
+                            stalled = True
+                            break
+                    yield c._emit_toward(q_prev, 0.0, max_step=0.020 if p["kind"] == "nut" else 0.025, want_vision=False)
                     if float(np.max(np.abs(c.proprio["joint_pos"] - q_prev))) < 0.008 and \
                             float(np.max(np.abs(c.proprio["joint_vel"]))) < 0.04:
                         break
@@ -375,17 +406,11 @@ class PlacementFinisher:
                 best_err_seen = cur_depth_err
                 p["best_depth_err"] = cur_depth_err
                 p["best_dyaw"] = dyaw
-            if not stalled:
-                # blocked in the final band (tip on the rim, nut on the chamfer): the lag-based stall test cannot fire
-                # there, so a depth shortfall after settling counts as a stall too
-                if cur_depth_err <= depth_tol:
-                    p["last_offset"] = (ox, oy, dyaw)
-                    return
-                p["blocked_at"] = cur_depth_err
-                c._log("trial_blocked", idx=idx, off=[round(ox, 4), round(oy, 4), round(dyaw, 3)], depth_err=round(p["blocked_at"], 4))
-            else:
-                p["blocked_at"] = cur_depth_err
-                c._log("trial_blocked", idx=idx, off=[round(ox, 4), round(oy, 4), round(dyaw, 3)], depth_err=round(cur_depth_err, 4))
+            if not stalled and cur_depth_err <= depth_tol:
+                p["last_offset"] = (ox, oy, dyaw)
+                return
+            p["blocked_at"] = cur_depth_err
+            c._log("trial_blocked", idx=idx, off=[round(ox, 4), round(oy, 4), round(dyaw, 3)], depth_err=round(cur_depth_err, 4))
         p["last_offset"] = None
 
     # ---------------------------------------------------------------- release gating
@@ -497,7 +522,8 @@ class PlacementFinisher:
             return False, f"perched d_xy={float(np.linalg.norm(q.position[:2] - seat_xy)):.3f} z={float(q.position[2]):.3f} pose={q.pose_hint}"
         # not near the seat: the tracked part (selected the way the controller selects it) found elsewhere = fell out
         elsewhere = c._select(goal, min_confidence=0.60, ignore_seated=True) if goal is not None else None
-        if elsewhere is not None and float(elsewhere.position[1]) < 0.05 + LAYOUT_SHIFT[1]:
+        if elsewhere is not None and float(elsewhere.position[1]) < 0.05 + LAYOUT_SHIFT[1] \
+                and float(np.linalg.norm(elsewhere.position[:2] - seat_xy)) < 0.32:
             return False, f"fell_out at {np.round(elsewhere.position[:2], 3).tolist()}"
         if released_ok:
             return True, "aligned_in_seat"
