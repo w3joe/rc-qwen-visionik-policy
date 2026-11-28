@@ -177,9 +177,12 @@ def validate_and_ground(plan: Plan, ctx: PlanContext) -> tuple[list[PlannedGoal]
             problems.append(f"step {i}: unknown destination {s.dest!r}")
             continue
         goals.append(g)
-    non_goal_xys = [p.position[:2].copy() for k, p in ctx.ids.items() if k not in used and p.confidence >= 0.45]
+    non_goal_parts = [(p.raw_kind, p.position[:2].copy()) for k, p in ctx.ids.items() if k not in used and p.confidence >= 0.70]
     for g in goals:
-        g.exclude_xys = [xy for xy in non_goal_xys if g.target_xy is None or float(np.linalg.norm(xy - g.target_xy)) > 0.04]
+        g.exclude_xys = [
+            xy for rk, xy in non_goal_parts
+            if rk != g.part_model and (g.target_xy is None or float(np.linalg.norm(xy - g.target_xy)) > 0.045)
+        ]
     try:
         print("[plan] goals " + "; ".join(f"{g.goal_id}:{g.part_model}" for g in goals)
               + " | parts " + "; ".join(f"{k}:{v.raw_kind}" for k, v in ctx.ids.items()), file=sys.stderr, flush=True)

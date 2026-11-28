@@ -182,9 +182,19 @@ class PlacementV2Mixin:
             yield from self._move_cartesian(np.array([cur_p[0], cur_p[1], 0.27]), cur_r, 0.0, pos_speed=0.022, settle=2)
             g_now = float(self.proprio["gripper"])
             if g_now < min_grip or g_now > min(0.74, g_open - 0.02):
-                if EMPTY_GRIPPER_THRESH < g_now < min_grip:
-                    # Pinched across thickness (nut was on edge): set back down gently before opening
-                    yield from self._move_cartesian(np.array([cur_p[0], cur_p[1], 0.175]), cur_r, 0.0, pos_speed=0.020, settle=1)
+                if EMPTY_GRIPPER_THRESH + 0.02 < g_now < min_grip:
+                    # Pinched an on-edge nut across its thickness: parallel jaws aligned its flat normal to +y_site!
+                    # Set it gently back onto the table and immediately tip it flat along +y_site.
+                    z_put = 0.012 + nut_pad_tip(model)
+                    yield from self._move_cartesian(np.array([cur_p[0], cur_p[1], z_put]), cur_r, 0.0, pos_speed=0.018, settle=2)
+                    yield from self._grip_hold(g_open, steps=8, early_stop=True, want_vision=False)
+                    yield from self._move_cartesian(np.array([cur_p[0], cur_p[1], 0.25]), cur_r, g_open, pos_speed=0.024, settle=1)
+                    edge_part = meta["part"]
+                    edge_part.position = np.array([float(cur_p[0]), float(cur_p[1]), float(edge_part.position[2])])
+                    yield from self._tip_edge_nut(edge_part, model=model, axis_override=cur_r[:, 1].copy())
+                    if getattr(self, "_last_tip_xy", None) is not None and getattr(goal, "target_xy", None) is not None:
+                        goal.target_xy = self._last_tip_xy.copy()
+                    continue
                 yield from self._grip_hold(g_open, steps=8, early_stop=True, want_vision=True)
                 continue
             held = HeldPart(model=model, kind="nut", ee_at_grasp=np.asarray(meta["grasp_ee_pos"], float),

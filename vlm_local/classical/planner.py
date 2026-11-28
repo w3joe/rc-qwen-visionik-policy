@@ -965,45 +965,61 @@ class EpisodeController:
 
     # ------------------------------------------------------------------ Skill 3: M30 nut -> hex_m30
 
-    def _tip_edge_nut(self, part: PartEstimate, model: str | None = None, yaw_offset: float = 0.0) -> Iterator[StepCommand]:
+    def _tip_edge_nut(
+        self,
+        part: PartEstimate,
+        model: str | None = None,
+        yaw_offset: float = 0.0,
+        axis_override: np.ndarray | None = None,
+    ) -> Iterator[StepCommand]:
         """Tip an on-edge nut flat onto the table with a size-parametric horizontal sweep across its upper face."""
         nut_key = model or (part.raw_kind if part.raw_kind in FASTENER_GEOM else "nut_m30")
         geom = FASTENER_GEOM.get(nut_key, FASTENER_GEOM["nut_m30"])
         af = float(geom.get("across_flats", 0.046))
         th = float(geom.get("thickness", 0.0256))
 
-        # Hover directly over the nut with slightly parted fingers so the wrist camera sees it unoccluded
         grip_push = 0.28  # ~25 mm inner gap (41 mm outer span): wide twin-prong bar prevents spinning the nut
-        yield from self._ensure_safe_height(0.25, grip_push)
-        p_look = np.array([float(part.position[0]), float(part.position[1]), 0.28], dtype=np.float64)
-        q_look = self.ik.solve(p_look, down_mat(0.0), self.q_target).q
-        yield from self._move_joint(q_look, grip_push, settle=2, want_vision=False)
-        yield self._emit_hold(grip_push, want_vision=True)
-        yield self._emit_hold(grip_push, want_vision=False)
-        if self.scene is not None:
-            near_same = [
-                p for p in self.scene.parts
-                if p.kind == "nut" and p.confidence >= 0.30
-                and float(np.linalg.norm(p.position[:2] - part.position[:2])) < 0.08
-                and (p.raw_kind == nut_key or nut_key not in FASTENER_GEOM)
-            ]
-            if near_same:
-                part = min(near_same, key=lambda p: float(np.linalg.norm(p.position[:2] - part.position[:2])))
-                if part.pose_hint != "on_edge":
-                    self._last_tip_xy = part.position[:2].copy()
-                    yield from self._grip_hold(0.72, steps=6, early_stop=True, want_vision=True)
-                    return
+        if axis_override is None:
+            # Hover over the nut with parted fingers so the wrist camera refines its XY (and axis when still seen on_edge)
+            yield from self._ensure_safe_height(0.25, grip_push)
+            p_look = np.array([float(part.position[0]), float(part.position[1]), 0.28], dtype=np.float64)
+            q_look = self.ik.solve(p_look, down_mat(0.0), self.q_target).q
+            yield from self._move_joint(q_look, grip_push, settle=2, want_vision=False)
+            yield self._emit_hold(grip_push, want_vision=True)
+            yield self._emit_hold(grip_push, want_vision=False)
+            if self.scene is not None:
+                near_same = [
+                    p for p in self.scene.parts
+                    if p.kind == "nut" and p.confidence >= 0.30
+                    and float(np.linalg.norm(p.position[:2] - part.position[:2])) < 0.08
+                    and (p.raw_kind == nut_key or nut_key not in FASTENER_GEOM)
+                ]
+                if near_same:
+                    refined = min(near_same, key=lambda p: float(np.linalg.norm(p.position[:2] - part.position[:2])))
+                    if refined.pose_hint == "on_edge":
+                        part = refined
+                    else:
+                        # Overhead wrist view can look square at 45 deg; keep original on_edge axis, refine XY only
+                        part = PartEstimate(
+                            kind=part.kind, raw_kind=part.raw_kind,
+                            position=np.array([float(refined.position[0]), float(refined.position[1]), float(part.position[2])]),
+                            axis=part.axis.copy(), yaw=part.yaw, confidence=refined.confidence,
+                            role=part.role, pose_hint="on_edge", axis_directed=part.axis_directed, extra=dict(part.extra),
+                        )
 
         pos = part.position
-        n_ax = np.array([float(part.axis[0]), float(part.axis[1]), 0.0], dtype=np.float64)
-        if float(np.linalg.norm(n_ax)) < 1e-4:
-            ang = part.yaw + yaw_offset
-            n_ax = np.array([math.cos(ang), math.sin(ang), 0.0], dtype=np.float64)
+        if axis_override is not None and float(np.linalg.norm(axis_override[:2])) > 1e-4:
+            n_ax = normalize(np.array([float(axis_override[0]), float(axis_override[1]), 0.0], dtype=np.float64))
         else:
-            n_ax = normalize(n_ax)
-            if abs(yaw_offset) > 1e-6:
-                c_o, s_o = math.cos(yaw_offset), math.sin(yaw_offset)
-                n_ax = np.array([c_o * n_ax[0] - s_o * n_ax[1], s_o * n_ax[0] + c_o * n_ax[1], 0.0], dtype=np.float64)
+            n_ax = np.array([float(part.axis[0]), float(part.axis[1]), 0.0], dtype=np.float64)
+            if float(np.linalg.norm(n_ax)) < 1e-4:
+                ang = part.yaw + yaw_offset
+                n_ax = np.array([math.cos(ang), math.sin(ang), 0.0], dtype=np.float64)
+            else:
+                n_ax = normalize(n_ax)
+                if abs(yaw_offset) > 1e-6:
+                    c_o, s_o = math.cos(yaw_offset), math.sin(yaw_offset)
+                    n_ax = np.array([c_o * n_ax[0] - s_o * n_ax[1], s_o * n_ax[0] + c_o * n_ax[1], 0.0], dtype=np.float64)
 
         # Pick push direction along +-n_ax staying on table and clear of fixture/other parts
         others = []

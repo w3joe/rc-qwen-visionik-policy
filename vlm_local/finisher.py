@@ -232,8 +232,8 @@ class PlacementFinisher:
         # Keep fingertip pads >= top_z + 1.5 mm while lowering nut bottom to floor_z + 0.5 mm (parametric in pocket depth)
         min_site_z = top_z + 0.0015 + pad_tip
         s_end_z = max(min_site_z, floor_z + 0.0005 + held.nut_pad_bottom + pad_tip)
-        # With low-force stall detection (zero pad slip), a perched nut stays >= 5.5 mm above s_end_z while an aligned nut drops within 3.5 mm
-        nut_depth_tol = 0.0035
+        # With low-force stall detection (zero pad slip), a perched nut stays >= 5.5 mm above s_end_z while an aligned nut drops within 2.9-3.5 mm
+        nut_depth_tol = 0.0029 if (top_z - floor_z) <= 0.011 else 0.0035
         s_pre = np.array([seat_xyz[0], seat_xyz[1], top_z + 0.045 + pad_tip])
         clearance = seat_clearance(held.model, seat_id)
         return {
@@ -495,7 +495,7 @@ class PlacementFinisher:
                             break
                         yield c._emit_toward(q_t, 0.0, max_step=0.025, want_vision=False)
                         cmd_p, _ = fk_pose(c.q_target)
-                        if float(c.proprio["ee_pos"][2] - cmd_p[2]) > 0.0035:
+                        if float(c.proprio["ee_pos"][2] - cmd_p[2]) > 0.0055:
                             contact = True
                             break
                     if contact:
