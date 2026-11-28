@@ -264,13 +264,21 @@ class PlacementFinisher:
             yield from c._move_cartesian(p["s_pre"], p["rot"], 0.0, pos_speed=0.016, settle=3, wrist_up=True)
         else:
             yield from c._move_cartesian(p["s_transit"], p["rot"], 0.0, pos_speed=0.025, rot_speed=0.16, settle=2)
-            # Refresh seat xy and fixture yaw from the robust multi-frame median (now including the overhead s_transit view)
+            # Refresh seat xy and fixture yaw: when the overhead wrist camera itself anchored >=2 seats on this frame,
+            # use that exact FK-calibrated fit (ignoring stale side-camera drift); else use the multi-frame median.
             yield c._emit_hold(0.0, want_vision=True)
             yield c._emit_hold(0.0, want_vision=False)
-            seats_med, f_yaw, _ = c._get_filtered_fixture()
+            sc = c.scene
+            seats_med, f_yaw_med, _ = c._get_filtered_fixture()
             sid = p.get("seat_id")
-            if sid in seats_med:
-                f_xyz = np.asarray(seats_med[sid], float)
+            w_anchors = int(((sc.raw if sc is not None else None) or {}).get("selfcal", {}).get("anchors", 0))
+            if sc is not None and sid in sc.seats and w_anchors >= 2:
+                f_xyz, f_yaw = np.asarray(sc.seats[sid], float), float(sc.fixture_yaw)
+            elif sid in seats_med:
+                f_xyz, f_yaw = np.asarray(seats_med[sid], float), float(f_yaw_med)
+            else:
+                f_xyz, f_yaw = None, 0.0
+            if f_xyz is not None:
                 if float(np.linalg.norm(f_xyz[:2] - p["seat_xyz"][:2])) < 0.035 and abs(wrap_angle(f_yaw - p["fyaw"])) < math.radians(15.0):
                     shift_xy = f_xyz[:2] - p["seat_xyz"][:2]
                     p["seat_xyz"] = f_xyz
