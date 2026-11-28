@@ -55,7 +55,10 @@ class PlacementV2Mixin:
         d_along = bolt_grasp_d_along(model)
         p_grasp = pos + d_along * ax_xy
         rot_grasp = site_rot_from_zx(np.array([0.0, 0.0, -1.0]), -ax_xy)
-        z_grasp = max(0.002, float(pos[2]) - 0.008) + bolt_pad_tip(model)
+        # A lying bolt rests at a known height (shank on the table, tilted up by its head): camera depth from the low
+        # side views overestimates it by ~2 cm, so the pads closed above the shank. Trust geometry, cap by perception.
+        z_axis = min(float(pos[2]), float(FASTENER_GEOM.get(model, FASTENER_GEOM["bolt_m16x50"]).get("lying_radius", 0.012)))
+        z_grasp = max(0.002, z_axis - 0.008) + bolt_pad_tip(model)
         grasp_pos = np.array([float(p_grasp[0]), float(p_grasp[1]), z_grasp])
         return grasp_pos, rot_grasp, 0.50, max(0.27, z_grasp + 0.12), {"d_along": d_along, "axis_xy": ax_xy, "model": model}
 

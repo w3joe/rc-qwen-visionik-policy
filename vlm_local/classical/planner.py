@@ -557,7 +557,8 @@ class EpisodeController:
         p_shank = pos.copy()
         if part.axis_directed:
             p_shank = pos + 0.003 * part.axis
-        z_tip = max(float(p_shank[2]) - 0.5 * geom["diameter"], 0.004) + PAD_TIP_BOLT_M30
+        z_axis = min(float(p_shank[2]), float(geom.get("lying_radius", 0.5 * geom["diameter"])))  # geometry, not camera depth
+        z_tip = max(z_axis - 0.5 * geom["diameter"], 0.004) + PAD_TIP_BOLT_M30
         grasp_pos = np.array([float(p_shank[0]), float(p_shank[1]), z_tip], dtype=np.float64)
         return (
             grasp_pos,
@@ -751,7 +752,7 @@ class EpisodeController:
         d_along = 0.004
         p_grasp = pos + d_along * ax_xy
         rot_grasp = site_rot_from_zx(np.array([0.0, 0.0, -1.0]), -ax_xy)
-        z_grasp = max(0.002, float(pos[2]) - 0.008) + PAD_TIP_BOLT_M16
+        z_grasp = max(0.002, min(float(pos[2]), FASTENER_GEOM["bolt_m16x50"]["lying_radius"]) - 0.008) + PAD_TIP_BOLT_M16
         grasp_pos = np.array([float(p_grasp[0]), float(p_grasp[1]), z_grasp], dtype=np.float64)
         hover_z = max(0.27, z_grasp + 0.12)
         return grasp_pos, rot_grasp, 0.50, hover_z, {"d_along": d_along, "axis_xy": ax_xy}
