@@ -527,6 +527,9 @@ class EpisodeController:
         # Bolt (M30x60 or generic)
         geom = FASTENER_GEOM.get(goal.part_model, FASTENER_GEOM["bolt_m30x60"])
         mode = part.pose_hint
+        near_lean_wall = self.scene is not None and self.scene.fixture_distance(pos[:2]) < 0.068
+        if mode == "standing" and (near_lean_wall or abs(float(part.axis[2])) < 0.96):
+            mode = "leaning"
         if mode == "standing":
             # Standing on head, shank points straight up: grip upper shank above head
             grasp_yaw = nearest_pi_yaw(fyaw + math.pi / 2.0, ref_yaw)
