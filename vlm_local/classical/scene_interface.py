@@ -630,10 +630,12 @@ def is_part_in_seat(part: PartEstimate, seat_id: str, scene: SceneEstimate) -> b
             return d_xy < 0.018 and abs(float(part.position[2]) - top_z) <= 0.012
         return d_xy < 0.018 and float(part.position[2]) > max(0.035, floor_z + 0.010) and abs(float(part.axis[2])) > 0.80
     if kind == "hex_pocket":
+        if part.pose_hint == "on_edge":
+            return False
         d_xy = float(np.linalg.norm(part.position[:2] - seat_xyz[:2]))
         floor_z = float(geom.get("floor_z", 0.102))
-        top_z = float(geom.get("top_z", FIXTURE_BLOCK_TOP_Z))
-        return d_xy < 0.018 and (floor_z + 0.003) <= float(part.position[2]) <= (top_z + 0.0065)
+        th = float(FASTENER_GEOM.get(part.raw_kind, FASTENER_GEOM["nut_m30"]).get("thickness", 0.0256))
+        return d_xy < 0.020 and (floor_z - 0.015) <= float(part.position[2]) <= (floor_z + 0.5 * th + 0.0065)
     return False
 
 
