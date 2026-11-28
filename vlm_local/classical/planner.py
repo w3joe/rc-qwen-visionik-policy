@@ -16,9 +16,17 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from .cell import BASE_WORLD, LAYOUT_SHIFT, reach_yaw, shifted
+from .cell import (
+    BASE_WORLD,
+    LAYOUT_SHIFT,
+    detect_real_cell_from_obs,
+    normalize_gripper_reading,
+    reach_yaw,
+    shifted,
+)
 from .kinematics import (
     HOME_Q,
+    SPARK_HOME_Q,
     NUM_JOINTS,
     PAD_HALF_WIDTH_X,
     PAD_TIP_BOLT_M16,
@@ -79,9 +87,12 @@ def _extract_proprio(obs: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         grip = 1.0
 
+    real_mode = detect_real_cell_from_obs(obs)
+    grip = normalize_gripper_reading(grip, real_cell=real_mode)
+
     ee_pos_raw = raw.get("ee_pos")
     ee_quat_raw = raw.get("ee_quat")
-    if ee_pos_raw is not None and ee_quat_raw is not None:
+    if not real_mode and ee_pos_raw is not None and ee_quat_raw is not None:
         ee_pos = np.asarray(ee_pos_raw, dtype=np.float64).reshape(-1)
         if ee_pos.size == 3:
             ee_pos = ee_pos + BASE_WORLD  # observation is in the robot base frame
@@ -124,9 +135,11 @@ class EpisodeController:
         self.tracker = TemporalSceneFilter(window=7)
 
         proprio = _extract_proprio(first_obs)
-        # At real episode start, simulator target is HOME_Q; fall back to joint_pos for synthetic tests
-        if float(np.max(np.abs(proprio["joint_pos"] - HOME_Q))) < 0.25:
-            self.q_target = HOME_Q.copy()
+        on_spark_branch = abs(wrap_angle(float(proprio["joint_pos"][0]))) > 0.5 * math.pi
+        self.home_q = SPARK_HOME_Q.copy() if on_spark_branch else HOME_Q.copy()
+        # At sim episode start, target is HOME_Q / SPARK_HOME_Q; fall back to joint_pos on real or custom starts
+        if not detect_real_cell_from_obs(first_obs) and float(np.max(np.abs(proprio["joint_pos"] - self.home_q))) < 0.25:
+            self.q_target = self.home_q.copy()
         else:
             self.q_target = proprio["joint_pos"].copy()
 
@@ -292,13 +305,13 @@ class EpisodeController:
             yield from self._ensure_safe_height(0.28, grip)
         vantage_pos = np.array(shifted((0.62, 0.14, 0.34)), dtype=np.float64)
         vantage_rot = down_mat(0.0)
-        # Solve near HOME_Q so we cleanly reset to the standard elbow-up wrist-down branch when empty
-        q_v = self.ik.solve(vantage_pos, vantage_rot, HOME_Q).q
+        # Solve near home_q so we cleanly reset to the active elbow-up wrist-down branch when empty
+        q_v = self.ik.solve(vantage_pos, vantage_rot, self.home_q).q
         q_cur = self.q_target.copy()
         if q_cur[4] * q_v[4] < 0.0:
             q_mid = 0.5 * (q_cur + q_v)
             q_mid[1] = min(float(q_mid[1]), -1.55)
-            q_mid[2] = min(float(q_mid[2]), 1.75)
+            q_mid[2] = max(float(q_mid[2]), -1.75) if q_mid[2] < 0.0 else min(float(q_mid[2]), 1.75)
             yield from self._move_joint(q_mid, grip, settle=0, want_vision=False)
         yield from self._move_joint(q_v, grip, settle=2, want_vision=False)
         yield self._emit_hold(grip, want_vision=True)

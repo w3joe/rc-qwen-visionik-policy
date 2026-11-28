@@ -1542,6 +1542,7 @@ def detect_scene(obs: dict[str, Any]) -> dict[str, Any] | None:
     if not any(v is not None for v in imgs_rgb.values()):
         return None
 
+    _cell.detect_real_cell_from_obs(obs)
     cams = build_nominal_cameras(obs, imgs_rgb)
     dets_2d = det.predict_views(imgs_rgb)
     return reconstruct_scene_3d(dets_2d, cams, imgs_rgb, det.fixture_kpt_seats, det.fixture_seat_spec)

@@ -310,7 +310,17 @@ class Camera:
 
 
 def _wrist_camera_from_proprio(proprio: dict[str, Any] | None, width: int = 640, height: int = 360) -> Camera | None:
-    if not proprio or "ee_pos" not in proprio or "ee_quat" not in proprio:
+    if not proprio:
+        return None
+    q_raw = proprio.get("joint_pos")
+    if q_raw is not None:
+        q = np.asarray(q_raw, dtype=np.float64).reshape(-1)
+        if q.size == 6 and np.all(np.isfinite(q)):
+            from .kinematics import wrist_camera_pose
+
+            p_w_c, R_w_c = wrist_camera_pose(q)
+            return Camera("wrist", p_w_c, R_w_c, WRIST_CAMERA_FOVY, width, height)
+    if "ee_pos" not in proprio or "ee_quat" not in proprio:
         return None
     p_w_ee = np.asarray(proprio["ee_pos"], float) + _cell.BASE_WORLD  # base frame -> world
     R_w_ee = _quat_to_mat(proprio["ee_quat"])
@@ -2102,6 +2112,7 @@ def estimate_scene(obs: dict[str, Any]) -> dict[str, Any]:
     (`RC_DETECTOR != '0'`) and confident; otherwise falls back to the classical perception pipeline.
     """
     if isinstance(obs, dict):
+        _cell.detect_real_cell_from_obs(obs)
         try:
             from . import detector as _det
 
